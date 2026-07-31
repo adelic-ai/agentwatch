@@ -78,3 +78,29 @@ window - per-session, or does it decay?) that the design doc doesn't specify, an
 policy unasked risks a detector nobody reviewed the semantics of. The interface (`(events) ->
 list[Finding]`) is real, though, so a follow-up build wires in the state machine without touching
 the CLI or findings store.
+
+## claudescope's web/ has no live timeline to overlay onto - built a small renderer instead
+
+Design doc §5 is explicit: "do NOT build a new UI" for peek/history - claudescope is supposed to
+already be a parsed-transcript timeline viewer that findings/commits get overlaid onto. Checked
+`~/inbox/claudescope/web/{session-summary,transcript-detail}.html`: both are static, already-
+rendered write-ups (a schema-drift report and a "session capture" narrative blog post) with no
+`<script>` tags, no fetch, no per-session rendering logic at all - not a live component that takes
+a session id and draws its timeline. `extract.py` *is* a real transcript parser (`iter_events`/
+`_flatten`), but it's a pandas-based batch/corpus-summary tool (`session_summary()`,
+`corpus_bytes()`), not a per-session UI either. So there was nothing to extend in place.
+
+Given that, built `oversight_console/timeline.py` (merge transcript events + findings.jsonl +
+`git log` into one ts-sorted list; unit tested) and `web/render_timeline.py` (a static-HTML
+renderer on top of it) rather than skip the overlay entirely or silently redefine "reuse
+claudescope" to mean something looser. Reused what claudescope actually offers: its own
+`ClaudeCodeAdapter`-equivalent parsing approach (this build's adapter, built independently per
+design doc §6, since claudescope's `extract.py` only keeps block *counts*, not tool_use/thinking
+content - see `claudescope/web/transcript-detail.html`'s own "counts only, not text" admission)
+and, deliberately, claudescope's exact CSS custom-property palette
+(`--bg/--panel/--ink/--accent/--good/--gap/...`) and dark-theme layout, so the rendered page reads
+as visually continuous with claudescope's other pages rather than a foreign tool bolted on.
+`render_timeline.py` takes the same generator for both scopes design doc §5 asks for: "peek"
+points `--transcript` at the current session's `.jsonl`; "history" points it at every past
+session's glob plus the full `--repo` git log - same code, wider input, exactly "one viewer at
+different scope."
