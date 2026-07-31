@@ -1,0 +1,5 @@
+{"__REALTIME_TIMESTAMP": "1700000000000000", "MESSAGE": "pam_unix(sudo:session): session opened for user root", "_PID": "500", "_COMM": "sudo", "SYSLOG_IDENTIFIER": "sudo"}
+{"__REALTIME_TIMESTAMP": "1700000005250000", "MESSAGE": "kernel: [12345.678] DROP-LAN: IN=eth0 OUT= SRC=10.0.0.5 DST=192.168.1.1 PROTO=TCP", "_PID": "0", "_COMM": "kernel", "SYSLOG_IDENTIFIER": "kernel"}
+not valid json
+{"MESSAGE": "no timestamp here", "_PID": "1"}
+{"__REALTIME_TIMESTAMP": "1700000010000000", "MESSAGE": "DROP-LAN blocked another attempt", "_PID": "0", "_COMM": "kernel", "SYSLOG_IDENTIFIER": "kernel"}
