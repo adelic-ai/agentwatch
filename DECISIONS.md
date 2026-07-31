@@ -42,3 +42,39 @@ fixtures per design doc §8 step 3 (`tests/test_orphan_reconciler.py`): a plante
 a three-level legit subprocess burst is not, and a uid-boundary crossing (agent shell → sudo →
 agent process) still resolves correctly since the process tree is built from *all* ground-truth
 events regardless of uid — only the per-event orphan *evaluation* is uid-scoped.
+
+## Divergence is lexical (named-tool matching), not semantic
+
+`reconciler/divergence.py`: a reasoning block only makes a checkable "claim" when it names a
+specific tool literally (e.g. "I'll use Read"); free-form planning prose is left alone. Rejected
+alternative: an LLM-judged semantic comparison of stated plan vs. action. That reintroduces the
+self-judge circularity design doc §6 calls out for the detector-model/agent-model pairing, plus
+cost, latency, and non-determinism a detective tool run in a loop shouldn't depend on. The known-
+tool vocabulary is seeded with Claude Code's standard tool names and extended per-session with
+whatever tool names actually appear via real `tool_use` events, so a claim naming a tool that's
+*never* actually called this session — the case most worth catching — is still recognized even
+under an adapter for a runtime this code has never seen.
+
+## Self-modification detector needs a persisted baseline; agent-flag doesn't
+
+`detectors/self_mod.py` compares a content-hash baseline against the current file; the baseline
+must be persisted between runs (the CLI's job, §5/§8 step 5) since "did this change" is inherently
+a two-point-in-time question. A path never seen before produces no finding (that run establishes
+the baseline) — but a path that *was* observed absent and now exists is a `is_change=True` finding
+(creating a config file where none existed is itself self-modification worth flagging).
+
+`detectors/agent_flag.py` needs no separate state file: a `NEEDS-HUMAN.md` entry's Finding `id` is
+a hash of its own verbatim text (`findings.py:agent_flag_finding`), so `FindingsStore`'s existing
+append-only dedup already makes "surface each entry once" work for free — re-parsing the whole file
+every poll is safe because an unchanged entry always re-derives the same id.
+
+## Lethal-trifecta: stub only, per design doc §7 non-goal
+
+`detectors/trifecta.py` always returns `[]`. Design doc §7 explicitly defers this ("stub the
+interface, note as follow-up") — implementing the real stateful CEP (classifying tool_use events
+into private-data-read / untrusted-content-ingestion / external-egress and tracking accumulation
+per session) is real design work of its own (what counts as "private data"? what's the accumulation
+window - per-session, or does it decay?) that the design doc doesn't specify, and inventing that
+policy unasked risks a detector nobody reviewed the semantics of. The interface (`(events) ->
+list[Finding]`) is real, though, so a follow-up build wires in the state machine without touching
+the CLI or findings store.
