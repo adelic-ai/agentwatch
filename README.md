@@ -72,10 +72,9 @@ web/
 tests/                       unittest, mirrors the package layout; tests/fixtures/ has a
                               real audit.log sample, synthetic journald/transcript fixtures, and
                               a full tests/fixtures/e2e/ set exercising every detector at once
-fixtures/                    the acceptance dataset: a real benign agent run (audit.log, journal.jsonl,
-                              transcript.jsonl) + v1-findings-83.jsonl, the 83 false positives v1
-                              produced against it. tests/test_acceptance_fixtures.py is the v2
-                              acceptance test - see "v2: fixing the 83" below.
+(fixtures/                   the real-telemetry acceptance dataset - this system's own benign run -
+                              is kept PRIVATE and is not in this repo; tests/test_acceptance_fixtures.py
+                              skips without it. See "v2: fixing the 83" below.)
 ```
 
 ## Running it
@@ -128,8 +127,9 @@ planted orphan is flagged, a multi-level legit subprocess burst is not.
 `run_once()` call, including the dedup-on-rerun behavior. It predates session scoping and has no
 runtime-pid exec in its ground truth, so it exercises v2's documented fail-open fallback (see
 DECISIONS.md) rather than the scoped path - `tests/test_orphan_verdict.py` and
-`tests/test_acceptance_fixtures.py` (against the real `fixtures/`, see "v2: fixing the 83" below)
-cover the scoped/verdict behavior directly.
+`tests/test_acceptance_fixtures.py` (against the real `fixtures/`, kept private - it skips when they
+are absent, as in this public repo; see "v2: fixing the 83" below) cover the scoped/verdict behavior
+directly.
 
 ## v1 scope
 
@@ -142,8 +142,9 @@ detective only, it never acts, only surfaces. Still true in v2.
 
 ## v2: fixing the 83
 
-Replayed against `fixtures/` - the real telemetry from this system's own first (v1) run - the
-orphan reconciler flagged **83 false positives** on entirely benign activity (true answer ~0).
+Replayed against `fixtures/` - the real telemetry from this system's own first (v1) run, kept
+private and not included in this public repo - the orphan reconciler flagged **83 false positives**
+on entirely benign activity (true answer ~0).
 Root cause: it evaluated every uid-1000 exec system-wide, with no notion of "the agent's session"
 versus "everything else uid 1000 ever touched" - login/provisioning noise, and the agent runtime's
 own housekeeping execs (`git status`, ripgrep, an npm version check), got time-window-checked
