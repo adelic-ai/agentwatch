@@ -1,7 +1,8 @@
 # agentwatch
 
-A quiet-by-default oversight console for a hands-off autonomous coding agent, per
-`~/inbox/agentwatch-v2-design.md` (v2; the v1 build was `~/inbox/oversight-console-design.md`). Three modes, one of which is new code:
+A quiet-by-default oversight console for a hands-off autonomous coding agent: it reconciles what the
+agent *said* it did (its transcript) against what it *actually* did (OS audit telemetry), and surfaces
+only actions with no authorizing intent. Three modes, one of which is new code:
 
 1. **Silent detector** *(this repo's new work)* - watches the agent's telemetry, surfaces
    exceptions only.
@@ -12,6 +13,28 @@ A quiet-by-default oversight console for a hands-off autonomous coding agent, pe
 Peek and History are one viewer (`web/render_timeline.py`) at different scope; the detector
 (`agentwatch/`) is the actual new build. See `DECISIONS.md` for every judgment call made
 along the way, and `NEEDS-HUMAN.md` for anything that needed a human (empty = nothing has).
+
+## Status & limitations
+
+**Work in progress — not yet a reliable detector.** What is real, measured on this system's own
+first run:
+
+- **False-positive side: effective, on real data.** v2's scoped reconciler produces **0 CONFIRMED
+  orphans** on a fully benign run — down from **83** in v1 — via *structural* attribution (session
+  scoping + CONFIRMED/GAP/NONE verdicts), not threshold tuning. See "v2: fixing the 83" below.
+
+What is **not** yet proven, and should not be assumed:
+
+- **Recall is untested against real attacks.** Only *synthetic* planted-orphan cases prove it fires.
+  An action the transcript plane can't authorize lands in `NONE` (no claim) — i.e. it could be
+  *missed*, not caught. Closing this needs real adversarial agent telemetry.
+- **One benign run.** No measured precision/recall across diverse runs — nothing here is
+  actuarial-grade yet.
+- **Attribution is inferred, not instrumented.** The tool_use↔process linkage is heuristic (subtree
+  + time window), not a deterministic correlation ID — sound because it is conservative, but that
+  ceiling caps how much it can safely catch.
+
+Detective only: it never acts, only surfaces.
 
 ## Layout
 
@@ -46,10 +69,10 @@ agentwatch/
   cli.py                       argparse entrypoint
 web/
   render_timeline.py         static-HTML peek/history renderer, claudescope-styled
-tests/                       unittest, mirrors the package layout; tests/fixtures/ has the
-                              real audit.log.sample, synthetic journald/transcript fixtures, and
+tests/                       unittest, mirrors the package layout; tests/fixtures/ has a
+                              real audit.log sample, synthetic journald/transcript fixtures, and
                               a full tests/fixtures/e2e/ set exercising every detector at once
-fixtures/                    v2: this system's own real first run (audit.log, journal.jsonl,
+fixtures/                    the acceptance dataset: a real benign agent run (audit.log, journal.jsonl,
                               transcript.jsonl) + v1-findings-83.jsonl, the 83 false positives v1
                               produced against it. tests/test_acceptance_fixtures.py is the v2
                               acceptance test - see "v2: fixing the 83" below.
@@ -58,18 +81,18 @@ fixtures/                    v2: this system's own real first run (audit.log, jo
 ## Running it
 
 No external dependencies - stdlib only (see DECISIONS.md for why: no pip/pytest/pandas were
-available on the build VM, and it also means zero supply-chain surface for a security tool).
+available on the build environment, and it also means zero supply-chain surface for a security tool).
 
 ```sh
 # one detector pass
 python3 -m agentwatch.cli \
-  --agent-uid "$(id -u agent-username)" \
+  --agent-uid "$(id -u AGENT_USER)" \
   --transcript-glob '~/.claude/projects/*/*.jsonl' \
-  --audit-log /Users/Shared/agent-telemetry/audit.log \
-  --journal /Users/Shared/agent-telemetry/journal.jsonl \
-  --needs-human ~/work/NEEDS-HUMAN.md \
-  --findings ~/work/findings.jsonl \
-  --state ~/.agentwatch_state.json
+  --audit-log /path/to/audit.log \
+  --journal /path/to/journal.jsonl \
+  --needs-human /path/to/NEEDS-HUMAN.md \
+  --findings findings.jsonl \
+  --state agentwatch_state.json
 
 # same, but polling every 30s instead of running once
 python3 -m agentwatch.cli ... --watch --interval 30
@@ -81,13 +104,13 @@ stderr, and it's appended to `findings.jsonl`.
 ```sh
 # peek: current session
 python3 web/render_timeline.py \
-  --transcript ~/.claude/projects/*/CURRENT_SESSION.jsonl \
-  --findings ~/work/findings.jsonl --repo ~/work --out peek.html
+  --transcript /path/to/CURRENT_SESSION.jsonl \
+  --findings findings.jsonl --repo . --out peek.html
 
 # history: every past session
 python3 web/render_timeline.py \
   --transcript '~/.claude/projects/*/*.jsonl' \
-  --findings ~/work/findings.jsonl --repo ~/work --out history.html
+  --findings findings.jsonl --repo . --out history.html
 ```
 
 ## Testing
@@ -96,11 +119,10 @@ python3 web/render_timeline.py \
 python3 -m unittest discover -s tests -v
 ```
 
-`tests/fixtures/audit_logs/audit.log.sample` is the real 300-line sample from
-`~/inbox/sample-telemetry/` (copied in verbatim) - it proves the auditd parser against real
-output, but it's generic system noise with no agent-uid activity, so it can't exercise the
-orphan-vs-legit-burst distinction itself (see DECISIONS.md). That's what
-`tests/test_orphan_reconciler.py`'s synthetic fixtures are for, per design doc §8 step 3: a
+`tests/fixtures/audit_logs/audit.log.sample` is a real 300-line auditd sample (copied in verbatim) -
+it proves the auditd parser against real output, but it's generic system noise with no agent-uid
+activity, so it can't exercise the orphan-vs-legit-burst distinction itself (see DECISIONS.md). That's
+what `tests/test_orphan_reconciler.py`'s synthetic fixtures are for, per design doc §8 step 3: a
 planted orphan is flagged, a multi-level legit subprocess burst is not.
 `tests/fixtures/e2e/` + `tests/test_run.py` run every wired-up v1 detector together in one
 `run_once()` call, including the dedup-on-rerun behavior. It predates session scoping and has no
