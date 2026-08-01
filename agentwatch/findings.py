@@ -53,6 +53,8 @@ class Finding:
 
 
 def orphan_finding(candidate) -> Finding:
+    """Only call this for a CONFIRMED-verdict candidate (see run.py) - `evidence["verdict"]` is
+    recorded for audit completeness, but a NONE/None-verdict candidate should never reach here."""
     ev = candidate.event
     fid = _make_id(
         DETECTOR_ORPHAN_SYSCALL, ev.pid, ev.ppid, ev.ts, ev.exe, tuple(candidate.ancestry_checked)
@@ -67,6 +69,8 @@ def orphan_finding(candidate) -> Finding:
         "args": list(ev.args),
         "ancestry_checked": list(candidate.ancestry_checked),
         "source": ev.source,
+        "verdict": candidate.verdict.value if candidate.verdict else None,
+        "reason": candidate.reason,
     }
     return Finding(id=fid, detector=DETECTOR_ORPHAN_SYSCALL, ts=ev.ts, summary=summary, evidence=evidence)
 

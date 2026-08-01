@@ -33,7 +33,8 @@ from agentwatch.findings import (
 )
 from agentwatch.groundtruth import audit_log, journald
 from agentwatch.reconciler.divergence import reconcile_divergence
-from agentwatch.reconciler.orphan import DEFAULT_WINDOW_SECONDS, reconcile_orphans
+from agentwatch.reconciler.orphan import DEFAULT_WINDOW_SECONDS, reconcile_orphans_scoped
+from agentwatch.reconciler.verdict import Verdict
 from agentwatch.state import load_state, save_state
 
 
@@ -88,13 +89,13 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
 
     findings: List[Finding] = []
 
-    for candidate in reconcile_orphans(
+    for candidate in reconcile_orphans_scoped(
         ground_truth_events,
         transcript_events,
         agent_uid=config.agent_uid,
         window_seconds=config.window_seconds,
     ):
-        if candidate.is_orphan:
+        if candidate.verdict == Verdict.CONFIRMED:
             findings.append(orphan_finding(candidate))
 
     for candidate in reconcile_divergence(transcript_events):
