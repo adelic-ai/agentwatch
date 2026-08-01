@@ -15,6 +15,19 @@ Everything else is read with `.get()` and ignored if absent. Unrecognized top-le
 last-prompt, attachment - none of which carry reasoning/tool_use content) are skipped, not
 treated as errors - only lines that fail to parse as JSON, or that don't match the stable core
 well enough to extract an event, count as a "skip" in ParseStats.
+
+Drift-gating (v2, design doc v2 §4): schema drift across Claude Code versions is exactly what
+makes this adapter's `.get()`-everywhere defensiveness necessary in the first place, and exactly
+what can silently make it extract *less* without erroring - a renamed `content` key wouldn't raise,
+it would just make every line look like the "nothing to extract" case. `KNOWN_VERSIONS` below is
+the "small per-version field map" the design doc asks for: right now it has exactly one entry (the
+only version this build has real transcript data for - see the contract test in
+tests/test_claude_code_adapter.py, which pins this adapter's extraction against the real
+fixtures/transcript.jsonl). A version not in this set doesn't change parsing (there's no second
+version's field names to switch on yet - inventing a second, untested code path would be worse
+than not having one), but it's recorded (`ParseStats.versions_seen`) and feeds
+reconciler/parse_health.py's "unknown version" signal - the actual safety net is the skip-rate and
+tool_use-vs-exec sanity checks there, not this registry by itself.
 """
 from __future__ import annotations
 
@@ -27,6 +40,11 @@ from agentwatch.events import REASONING, TOOL_USE, NormalizedEvent, ParseStats
 
 # type values that carry a message.content we might care about
 _MESSAGE_TYPES = {"assistant", "user"}
+
+# Claude Code versions this adapter has been validated against a real transcript fixture for
+# (design doc v2 §4's "contract tests: one real transcript fixture per known version"). See the
+# module docstring above for why this doesn't branch parsing behavior yet.
+KNOWN_VERSIONS = frozenset({"2.1.220"})
 
 
 def _parse_ts(raw: object) -> Optional[float]:
@@ -73,6 +91,8 @@ class ClaudeCodeAdapter(TranscriptAdapter):
             # version. Fail-soft means "skip silently", not "skip loudly" - only count it if we
             # expected content and didn't find a usable shape.
             return
+
+        self._stats.record_version(obj.get("version"))
 
         message = obj.get("message")
         if not isinstance(message, dict):

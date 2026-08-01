@@ -20,6 +20,7 @@ DETECTOR_LAN_REACH = "lan_reach"
 DETECTOR_SELF_MOD = "self_mod"
 DETECTOR_AGENT_FLAG = "agent_flag"
 DETECTOR_LETHAL_TRIFECTA = "lethal_trifecta"  # stub only in v1 - see reconciler/trifecta.py
+DETECTOR_PARSE_HEALTH = "parse_health"  # v2, design doc v2 §4 - see reconciler/parse_health.py
 
 
 def _make_id(detector: str, *key_parts: object) -> str:
@@ -121,6 +122,21 @@ def agent_flag_finding(entry, ts: float) -> Finding:
     summary = f"NEEDS-HUMAN.md: {entry.heading}"
     evidence = {"heading": entry.heading, "body": entry.body}
     return Finding(id=fid, detector=DETECTOR_AGENT_FLAG, ts=ts, summary=summary, evidence=evidence)
+
+
+def parse_health_finding(health, ts: float) -> Finding:
+    """Design doc v2 §4: surface degraded transcript extraction as its own finding, distinct from
+    (and alongside) downgrading orphan verdicts to NONE for the same run."""
+    fid = _make_id(DETECTOR_PARSE_HEALTH, ts, health.skip_rate, health.tool_use_count, health.exec_count)
+    summary = "transcript parser degraded - likely a Claude Code version change: " + "; ".join(health.reasons)
+    evidence = {
+        "skip_rate": health.skip_rate,
+        "tool_use_count": health.tool_use_count,
+        "exec_count": health.exec_count,
+        "unknown_version": health.unknown_version,
+        "reasons": list(health.reasons),
+    }
+    return Finding(id=fid, detector=DETECTOR_PARSE_HEALTH, ts=ts, summary=summary, evidence=evidence)
 
 
 class FindingsStore:

@@ -41,16 +41,27 @@ class NormalizedEvent:
 
 @dataclass
 class ParseStats:
-    """Defensiveness is only auditable if skips are counted, not just silently swallowed."""
+    """Defensiveness is only auditable if skips are counted, not just silently swallowed.
+
+    `versions_seen` (v2, design doc v2 §4 drift-gating): the Claude Code `version` field observed
+    on message-bearing lines, counted rather than kept as a single value because a transcript can
+    in principle span a version upgrade mid-session - see reconciler/parse_health.py.
+    """
 
     lines_total: int = 0
     lines_skipped: int = 0
     events_emitted: int = 0
     skip_reasons: dict = field(default_factory=dict)
+    versions_seen: dict = field(default_factory=dict)
 
     def record_skip(self, reason: str) -> None:
         self.lines_skipped += 1
         self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
+
+    def record_version(self, version: Optional[str]) -> None:
+        if not version:
+            return
+        self.versions_seen[version] = self.versions_seen.get(version, 0) + 1
 
 
 # --- ground-truth plane (from an auditd/journald parser) ---------------------------------------

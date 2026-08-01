@@ -21,7 +21,7 @@ from agentwatch.detectors.self_mod import (
     update_baseline,
 )
 from agentwatch.detectors.trifecta import detect_lethal_trifecta
-from agentwatch.events import GroundTruthEvent, NormalizedEvent
+from agentwatch.events import EXEC, TOOL_USE, GroundTruthEvent, NormalizedEvent, ParseStats
 from agentwatch.findings import (
     Finding,
     FindingsStore,
@@ -29,11 +29,13 @@ from agentwatch.findings import (
     divergence_finding,
     lan_reach_finding,
     orphan_finding,
+    parse_health_finding,
     self_mod_finding,
 )
 from agentwatch.groundtruth import audit_log, journald
 from agentwatch.reconciler.divergence import reconcile_divergence
 from agentwatch.reconciler.orphan import DEFAULT_WINDOW_SECONDS, reconcile_orphans_scoped
+from agentwatch.reconciler.parse_health import assess_parse_health
 from agentwatch.reconciler.verdict import Verdict
 from agentwatch.state import load_state, save_state
 
@@ -51,15 +53,32 @@ class Config:
     self_mod_watched_paths: tuple = DEFAULT_WATCHED_PATHS
 
 
-def _load_transcript_events(paths: Iterable[Path]) -> List[NormalizedEvent]:
+def _merge_parse_stats(all_stats: List[ParseStats]) -> ParseStats:
+    """One ParseStats over every transcript file this run read - parse-health (design doc v2 §4)
+    is a property of the whole run's extraction, not any single file."""
+    merged = ParseStats()
+    for s in all_stats:
+        merged.lines_total += s.lines_total
+        merged.lines_skipped += s.lines_skipped
+        merged.events_emitted += s.events_emitted
+        for reason, count in s.skip_reasons.items():
+            merged.skip_reasons[reason] = merged.skip_reasons.get(reason, 0) + count
+        for version, count in s.versions_seen.items():
+            merged.versions_seen[version] = merged.versions_seen.get(version, 0) + count
+    return merged
+
+
+def _load_transcript_events(paths: Iterable[Path]) -> tuple[List[NormalizedEvent], ParseStats]:
     adapter = ClaudeCodeAdapter()
     events: List[NormalizedEvent] = []
+    all_stats: List[ParseStats] = []
     for raw_path in paths:
         p = Path(raw_path)
         if not p.exists():
             continue
         events.extend(adapter.parse_file(p))
-    return events
+        all_stats.append(adapter.stats)
+    return events, _merge_parse_stats(all_stats)
 
 
 def _load_ground_truth_events(
@@ -84,16 +103,23 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
     """
     now = now if now is not None else time.time()
 
-    transcript_events = _load_transcript_events(config.transcript_paths)
+    transcript_events, parse_stats = _load_transcript_events(config.transcript_paths)
     ground_truth_events = _load_ground_truth_events(config.audit_log_path, config.journal_path)
 
     findings: List[Finding] = []
+
+    tool_use_count = sum(1 for e in transcript_events if e.kind == TOOL_USE)
+    exec_count = sum(1 for e in ground_truth_events if e.kind == EXEC)
+    health = assess_parse_health(parse_stats, tool_use_count=tool_use_count, exec_count=exec_count)
+    if health.degraded:
+        findings.append(parse_health_finding(health, ts=now))
 
     for candidate in reconcile_orphans_scoped(
         ground_truth_events,
         transcript_events,
         agent_uid=config.agent_uid,
         window_seconds=config.window_seconds,
+        degraded=health.degraded,
     ):
         if candidate.verdict == Verdict.CONFIRMED:
             findings.append(orphan_finding(candidate))
