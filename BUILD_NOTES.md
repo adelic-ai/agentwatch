@@ -77,3 +77,31 @@ Full reasoning for each is in `DECISIONS.md`; short version:
 - `NEEDS-HUMAN.md` — still empty. Nothing hit the bar for "needs a human."
 - Commit log (`git log`) — nine atomic commits, one per design-doc build-order step, each with a
   body explaining the *why*.
+
+## v2: the 83-false-positive refactor (`agentwatch-v2-design.md`)
+
+TL;DR of the second build, on the same branch discipline: rename `oversight_console` →
+`agentwatch`, then fix the one thing v1 got wrong. Replayed against `fixtures/` - this system's
+own real first run - the orphan reconciler had flagged 83 false positives (true answer ~0), all
+three shapes diagnosed in the design doc: the agent runtime's own execs, provisioning noise outside
+any session, and runtime-internal tool execs (`git`, ripgrep, an npm check) Claude Code runs
+directly with no Bash tool_use involved.
+
+| Piece | File(s) | What it does |
+|---|---|---|
+| Session scoping + runtime classification | `reconciler/runtime_scope.py` | Finds the agent runtime's own processes, scopes evaluation to their descendant subtree, classifies known runtime-internal execs |
+| Verdict vocabulary | `reconciler/verdict.py` | CONFIRMED/GAP/NONE, replacing the old binary `is_orphan` (canon's `detection.entailment_gap` isn't importable here - confirmed, see DECISIONS.md) |
+| Scoped reconciler | `reconciler/orphan.py:reconcile_orphans_scoped` | Wraps the unchanged v1 time-window primitive with scoping + verdicts; what `run.py` calls now |
+| Drift-gating | `reconciler/parse_health.py` | Skip-rate + tool_use-vs-exec sanity checks; downgrades CONFIRMED to NONE and surfaces its own finding when the transcript parse looks broken |
+| Contract test | `tests/test_claude_code_adapter_contract.py` | Pins extraction against the real `fixtures/transcript.jsonl` (version 2.1.220) |
+| Acceptance test | `tests/test_acceptance_fixtures.py` | The design doc's own "definition of done": all 83 reclassify off CONFIRMED, whole-run CONFIRMED count is 0, synthetic tests stay green |
+
+**97 tests, all passing** (up from 64) - every v1 test is unchanged and still green; the new ones
+cover session scoping, verdict classification, parse-health, the version contract, and the
+acceptance run against real data. Full reasoning for each call (fail-open scoping, the specific
+runtime-internal allowlist instead of a blanket rule, why causal attribution reuses v1's existing
+mechanism rather than a new one, GAP's non-implementation) is in `DECISIONS.md`'s `## v2: ...`
+entries.
+
+Nothing hit the `NEEDS-HUMAN.md` bar this round either - every ambiguity in the v2 design doc had
+a defensible default and got a `DECISIONS.md` entry instead.

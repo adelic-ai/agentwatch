@@ -26,7 +26,12 @@ agentwatch/
     journald.py            journal.jsonl parser -> DROP-LAN GroundTruthEvents
   reconciler/
     process_tree.py        pid/ppid tree from ground-truth exec events
-    orphan.py               orphan-syscall detector (design doc §3.1 / §4 - the risk)
+    runtime_scope.py        v2: agent-session subtree scoping + runtime/runtime-internal
+                              classification (design doc v2 §2) - see DECISIONS.md
+    verdict.py               v2: CONFIRMED/GAP/NONE verdict enum (design doc v2 §3)
+    parse_health.py          v2: skip-rate + tool_use-vs-exec drift gating (design doc v2 §4)
+    orphan.py               orphan-syscall detector (design doc §3.1 / §4 - the risk);
+                              reconcile_orphans_scoped() is what run.py calls in v2
     divergence.py            reasoning-vs-action divergence detector (design doc §3.2)
   detectors/
     lan_reach.py            any DROP-LAN event -> a finding
@@ -44,6 +49,10 @@ web/
 tests/                       unittest, mirrors the package layout; tests/fixtures/ has the
                               real audit.log.sample, synthetic journald/transcript fixtures, and
                               a full tests/fixtures/e2e/ set exercising every detector at once
+fixtures/                    v2: this system's own real first run (audit.log, journal.jsonl,
+                              transcript.jsonl) + v1-findings-83.jsonl, the 83 false positives v1
+                              produced against it. tests/test_acceptance_fixtures.py is the v2
+                              acceptance test - see "v2: fixing the 83" below.
 ```
 
 ## Running it
@@ -94,7 +103,11 @@ orphan-vs-legit-burst distinction itself (see DECISIONS.md). That's what
 `tests/test_orphan_reconciler.py`'s synthetic fixtures are for, per design doc §8 step 3: a
 planted orphan is flagged, a multi-level legit subprocess burst is not.
 `tests/fixtures/e2e/` + `tests/test_run.py` run every wired-up v1 detector together in one
-`run_once()` call, including the dedup-on-rerun behavior.
+`run_once()` call, including the dedup-on-rerun behavior. It predates session scoping and has no
+runtime-pid exec in its ground truth, so it exercises v2's documented fail-open fallback (see
+DECISIONS.md) rather than the scoped path - `tests/test_orphan_verdict.py` and
+`tests/test_acceptance_fixtures.py` (against the real `fixtures/`, see "v2: fixing the 83" below)
+cover the scoped/verdict behavior directly.
 
 ## v1 scope
 
@@ -103,4 +116,29 @@ and agent-flag detectors; `findings.jsonl` + a terminal notifier; peek/history o
 
 Not built, on purpose: the lethal-trifecta CEP (interface stubbed in `detectors/trifecta.py`),
 a Gemini adapter, real-time streaming (batch/poll only), and any enforcement/blocking - this is
-detective only, it never acts, only surfaces.
+detective only, it never acts, only surfaces. Still true in v2.
+
+## v2: fixing the 83
+
+Replayed against `fixtures/` - the real telemetry from this system's own first (v1) run - the
+orphan reconciler flagged **83 false positives** on entirely benign activity (true answer ~0).
+Root cause: it evaluated every uid-1000 exec system-wide, with no notion of "the agent's session"
+versus "everything else uid 1000 ever touched" - login/provisioning noise, and the agent runtime's
+own housekeeping execs (`git status`, ripgrep, an npm version check), got time-window-checked
+against the transcript exactly like real tool-call output, and failed, because nothing in a
+transcript ever authorizes them.
+
+v2 fixes this with `reconciler/runtime_scope.py`: find the agent runtime's own processes (`claude`/
+`claude.exe`/`node`), scope evaluation to their descendant subtree only (everything else is out of
+scope entirely, not even a suppressed candidate), and classify unmatched-but-in-scope execs against
+a small documented "runtime-internal" allowlist (git/rg/npm/node/env, a POSIX-shell-not-bash) so
+Claude Code's own housekeeping gets a `NONE` verdict instead of `CONFIRMED` - while an unexplained
+exec (say, a compromised runtime spawning something unrecognized) still is. `reconciler/verdict.py`
+replaces the old binary `is_orphan` with this CONFIRMED/GAP/NONE vocabulary; `reconciler/
+parse_health.py` adds a safety net so a Claude Code schema change that silently breaks the
+transcript parser downgrades everything to NONE instead of manufacturing false CONFIRMEDs.
+
+`tests/test_acceptance_fixtures.py` is the "definition of done" per design doc v2 §5: all 83 of
+v1's flagged pids reclassify off CONFIRMED, CONFIRMED orphans across the *entire* real audit.log
+are 0, and every pre-existing synthetic test (planted orphan still CONFIRMED, legit burst still
+clear) stays green. See `DECISIONS.md`'s `## v2: ...` entries for the reasoning behind each call.

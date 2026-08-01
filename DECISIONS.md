@@ -3,6 +3,9 @@
 Judgment calls made while building the oversight console, per `CLAUDE.md`'s "when the doc is
 ambiguous, decide and proceed" instruction. Newest last.
 
+Entries below "## v2: ..." are from the `agentwatch-v2-design.md` refactor (rename to
+`agentwatch`, fix the 83 real false positives). Everything above is the v1 record, left as-is.
+
 ## Stdlib only, unittest instead of pytest
 
 The build VM has no `pip`/`ensurepip` and no `pandas`/`pytest` preinstalled (confirmed:
@@ -104,3 +107,103 @@ as visually continuous with claudescope's other pages rather than a foreign tool
 points `--transcript` at the current session's `.jsonl`; "history" points it at every past
 session's glob plus the full `--repo` git log - same code, wider input, exactly "one viewer at
 different scope."
+
+## v2: session scoping fails open, not closed, when no runtime pid is found
+
+`reconciler/runtime_scope.py:RuntimeScope` scopes evaluation to the agent session's descendant
+subtree by finding processes matching a documented runtime-exe pattern (`claude`/`claude.exe`
+under the Claude Code install path, or `node` invoking `claude`). If *none* are found for
+`agent_uid` in the ground-truth stream at all, `RuntimeScope.active` is `False` and `in_scope()`
+returns `True` unconditionally - every agent-uid exec falls back to v1's old whole-uid evaluation,
+rather than the scoped reconciler going silently blind. Rejected alternative: treat "no runtime pid
+found" as itself a finding-worthy condition (e.g. a NEEDS-HUMAN-style flag). Decided against it for
+v2: it would fire on every synthetic test and every fixture that doesn't happen to include a
+`claude.exe` exec (most of `tests/fixtures/e2e/`, which predates this feature and is deliberately
+left unchanged - see the entry below), which is exactly the "crying wolf" CLAUDE.md warns against.
+A detector that can't find its own runtime process is a real gap worth investigating eventually,
+but the correct response *today*, given the design doc's own "prefer under-alerting to a swamp"
+steer, is graceful degradation to the proven v1 behavior, not a loud alarm on every quiet run.
+
+## v2: the runtime-internal allowlist is a small documented set, not "anything the runtime spawns"
+
+The real 83 false positives all trace to three shapes (design doc v2 §0): the runtime's own
+execs, provisioning noise outside any session, and runtime-internal tool execs (`git`, ripgrep,
+an npm version check, an IDE-detection probe, a git-identity check - all spawned by Claude Code
+itself, no Bash tool_use involved). Session scoping handles the first two; for the third, the
+tempting blanket rule is "any exec whose ancestry never correlates with a tool_use, but does
+descend from the runtime pid, is runtime-internal" - but that would quietly excuse a compromised
+runtime spawning anything at all (a reverse shell, say) directly, which defeats the detector's
+purpose for exactly the scenario it exists to catch. Instead `RuntimeScope` checks a small,
+specific, documented allowlist (`DEFAULT_RUNTIME_INTERNAL_NAMES` = git/rg/npm/node/env, plus a
+POSIX shell that isn't bash) matched against the *attachment point* - the pid where an unmatched
+chain first attaches directly to the runtime process - and propagates that verdict down to
+descendants. Verified against the real fixture: this drives all 83 to NONE/out-of-scope/runtime
+while a synthetic unexplained direct child (`nc`, unmatched) in
+`tests/test_orphan_verdict.py::test_planted_orphan_within_the_session_is_still_confirmed` stays
+CONFIRMED. Known limitation, stated plainly rather than glossed over: if a compromised runtime
+spawned something literally named `git` or via `/bin/sh -c`, this would still misclassify it as
+NONE - the self-report plane structurally can't distinguish "the real git status check" from "a
+disguised one" from process-tree shape alone, which is precisely why NONE means "no claim," not
+"confirmed safe" (see `reconciler/verdict.py`).
+
+## v2: causal attribution is the existing time-window+ancestry walk, properly scoped - not a new mechanism
+
+Design doc v2 §2 describes "causal attribution": a Bash tool_use spawns a shell directly under the
+session root, and that shell's whole subtree is attributed to it. v1's `reconcile_orphans` already
+does exactly this - `_authorizing_tool_use` checks each ancestor's own exec timestamp against every
+tool_use's `[ts, ts+window]`, and authorization already inherits transitively down the tree (proven
+by `test_legit_burst_not_flagged_even_when_grandchild_execs_late`, unchanged since v1). What v1 was
+missing wasn't the causal linkage itself, it was that this check ran over *every* uid-1000 exec
+instead of just the agent's session subtree, so it kept correlating unrelated login/provisioning
+noise against the same tool_use timeline by coincidence of who happened to be uid 1000. Building a
+second, parallel "which tool_use spawned this specific shell" mechanism (e.g. trying to pin down
+the exact shell pid a Bash tool_use produced) would duplicate a mechanism v1 already has tests
+proving correct, for no behavioral gain once scoping is fixed - so v2 keeps `reconcile_orphans`
+as-is and layers `RuntimeScope` on top (`reconcile_orphans_scoped`) rather than rewriting it.
+
+## v2: GAP is defined but has no v2 producer; canon isn't importable here
+
+Design doc v2 §3: "if canon's `detection.entailment_gap` is importable, reuse its CONFIRMED/GAP/
+NONE semantics; otherwise implement a small stdlib enum + classifier." Confirmed on this build VM:
+`import detection.entailment_gap` and `import canon` both fail (`ModuleNotFoundError`), and nothing
+matching that name exists on `sys.path` or the filesystem - so `reconciler/verdict.py` is the
+stdlib fallback. CONFIRMED and NONE are concretely produced by the orphan reconciler. GAP ("an
+entailed counterpart is absent while its channel is collected") isn't - it describes the *other*
+direction from what the orphan reconciler checks (ground truth exists, self-report silent); a
+detector for "self-report claims an action, ground truth's collected channel never shows it" is
+real design work of its own (which channel counts as "collected" per action type isn't specified),
+same shape as the lethal-trifecta stub already deferred in v1. Defined for vocabulary completeness,
+not invented unasked - noted here rather than silently left out.
+
+## v2: parse-health thresholds are chosen, not calibrated - only one version's real data exists
+
+`reconciler/parse_health.py`'s skip-rate threshold (20%) and the exec-count floor for the
+tool_use-cratering check (10) aren't derived from comparing multiple Claude Code versions' real
+transcripts against each other - `fixtures/transcript.jsonl` is the only real transcript this build
+has, all from version 2.1.220. They're chosen to be obviously permissive on a healthy transcript
+(the real fixture measures 0% skip-rate, 79 tool_use against 2221 execs) while still catching the
+concrete failure mode the design doc describes (extraction silently craters to ~0 tool_use). A
+version bump alone doesn't set `degraded` - `KNOWN_VERSIONS` in `adapters/claude_code.py` has one
+entry, and treating "not in that one-entry set" as itself alarming would fire on the very next
+Claude Code release regardless of whether anything actually broke.
+
+## v2: RUNTIME_EXE_PREFIXES lives in the reconciler as swappable config, not adapter logic
+
+`reconciler/runtime_scope.py`'s `DEFAULT_RUNTIME_EXE_PREFIXES` etc. name Claude-Code-specific
+paths (`/usr/lib/node_modules/@anthropic-ai/claude-code/`), which could look like it violates
+design doc §6 ("nothing above the adapter may couple to Claude specifics"). It doesn't: these are
+runtime configuration values read from `GroundTruthEvent.exe`/`comm` (generic fields, same plane
+`self_mod.py`'s `DEFAULT_WATCHED_PATHS` already names Claude-specific paths in for v1), passed as
+keyword arguments to `RuntimeScope.__init__` with defaults - not hardcoded into any control-flow
+path the reconciler/detectors take. A future Gemini adapter (explicit v1/v2 non-goal, not built
+here) would pair with a different prefix set passed at the CLI/`Config` layer; nothing in
+`reconciler/` or `detectors/` would need to change to support it.
+
+## v2: fixtures/ (the real v1 run) is committed, not gitignored
+
+`fixtures/audit.log`/`journal.jsonl`/`transcript.jsonl`/`v1-findings-83.jsonl` (6.7MB) are checked
+in rather than left untracked or added to `.gitignore`. This is this system's own real first run,
+not a secret or a generated artifact, and `tests/test_acceptance_fixtures.py` - the "definition of
+done" test per design doc v2 §5 - reads it directly; a gitignored acceptance fixture would make the
+acceptance test unrunnable from a fresh clone, which defeats its point as a permanent regression
+test.
