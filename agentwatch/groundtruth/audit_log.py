@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from typing import Iterable, Iterator, Optional
 
-from oversight_console.events import EXEC, GroundTruthEvent, ParseStats
+from agentwatch.events import EXEC, GroundTruthEvent, ParseStats
 
 _MSG_RE = re.compile(r"msg=audit\((\d+\.\d+):(\d+)\):")
 _TYPE_RE = re.compile(r"^type=(\S+)")

@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable, Optional
 
-from oversight_console.events import EXEC, GroundTruthEvent
+from agentwatch.events import EXEC, GroundTruthEvent
 
 
 class ProcessTree:

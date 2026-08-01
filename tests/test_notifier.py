@@ -1,8 +1,8 @@
 import io
 import unittest
 
-from oversight_console.findings import Finding
-from oversight_console.notifier import format_notification, notify
+from agentwatch.findings import Finding
+from agentwatch.notifier import format_notification, notify
 
 
 def finding(fid, ts, detector="orphan_syscall", summary="something happened"):

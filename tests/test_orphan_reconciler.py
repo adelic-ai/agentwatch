@@ -1,7 +1,7 @@
 import unittest
 
-from oversight_console.events import EXEC, GroundTruthEvent, NormalizedEvent, TOOL_USE
-from oversight_console.reconciler.orphan import reconcile_orphans
+from agentwatch.events import EXEC, GroundTruthEvent, NormalizedEvent, TOOL_USE
+from agentwatch.reconciler.orphan import reconcile_orphans
 
 AGENT_UID = 2000
 WINDOW = 15.0

@@ -22,8 +22,8 @@ import json
 from datetime import datetime, timezone
 from typing import Iterable, Iterator, Optional
 
-from oversight_console.adapters.base import TranscriptAdapter
-from oversight_console.events import REASONING, TOOL_USE, NormalizedEvent, ParseStats
+from agentwatch.adapters.base import TranscriptAdapter
+from agentwatch.events import REASONING, TOOL_USE, NormalizedEvent, ParseStats
 
 # type values that carry a message.content we might care about
 _MESSAGE_TYPES = {"assistant", "user"}

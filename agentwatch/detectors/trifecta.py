@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
-from oversight_console.events import NormalizedEvent
-from oversight_console.findings import Finding
+from agentwatch.events import NormalizedEvent
+from agentwatch.findings import Finding
 
 
 def detect_lethal_trifecta(events: Iterable[NormalizedEvent]) -> List[Finding]:

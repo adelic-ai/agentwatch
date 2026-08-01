@@ -12,17 +12,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from oversight_console.adapters.claude_code import ClaudeCodeAdapter
-from oversight_console.detectors.agent_flag import read_entries
-from oversight_console.detectors.lan_reach import detect_lan_reach
-from oversight_console.detectors.self_mod import (
+from agentwatch.adapters.claude_code import ClaudeCodeAdapter
+from agentwatch.detectors.agent_flag import read_entries
+from agentwatch.detectors.lan_reach import detect_lan_reach
+from agentwatch.detectors.self_mod import (
     DEFAULT_WATCHED_PATHS,
     check_self_modification,
     update_baseline,
 )
-from oversight_console.detectors.trifecta import detect_lethal_trifecta
-from oversight_console.events import GroundTruthEvent, NormalizedEvent
-from oversight_console.findings import (
+from agentwatch.detectors.trifecta import detect_lethal_trifecta
+from agentwatch.events import GroundTruthEvent, NormalizedEvent
+from agentwatch.findings import (
     Finding,
     FindingsStore,
     agent_flag_finding,
@@ -31,10 +31,10 @@ from oversight_console.findings import (
     orphan_finding,
     self_mod_finding,
 )
-from oversight_console.groundtruth import audit_log, journald
-from oversight_console.reconciler.divergence import reconcile_divergence
-from oversight_console.reconciler.orphan import DEFAULT_WINDOW_SECONDS, reconcile_orphans
-from oversight_console.state import load_state, save_state
+from agentwatch.groundtruth import audit_log, journald
+from agentwatch.reconciler.divergence import reconcile_divergence
+from agentwatch.reconciler.orphan import DEFAULT_WINDOW_SECONDS, reconcile_orphans
+from agentwatch.state import load_state, save_state
 
 
 @dataclass
@@ -45,7 +45,7 @@ class Config:
     journal_path: Optional[Path] = None
     needs_human_path: Optional[Path] = None
     findings_path: Path = Path("findings.jsonl")
-    state_path: Path = Path("oversight_console_state.json")
+    state_path: Path = Path("agentwatch_state.json")
     window_seconds: float = DEFAULT_WINDOW_SECONDS
     self_mod_watched_paths: tuple = DEFAULT_WATCHED_PATHS
 

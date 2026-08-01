@@ -30,10 +30,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from oversight_console.adapters.claude_code import ClaudeCodeAdapter  # noqa: E402
-from oversight_console.events import REASONING, TOOL_USE  # noqa: E402
-from oversight_console.findings import FindingsStore  # noqa: E402
-from oversight_console.timeline import COMMIT, FINDING, TRANSCRIPT, build_timeline, commits_from_git_log  # noqa: E402
+from agentwatch.adapters.claude_code import ClaudeCodeAdapter  # noqa: E402
+from agentwatch.events import REASONING, TOOL_USE  # noqa: E402
+from agentwatch.findings import FindingsStore  # noqa: E402
+from agentwatch.timeline import COMMIT, FINDING, TRANSCRIPT, build_timeline, commits_from_git_log  # noqa: E402
 
 _STYLE = """
 :root{
@@ -140,7 +140,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--findings", default=None, help="findings.jsonl path.")
     p.add_argument("--repo", default=None, help="Work repo path, for the git-log overlay.")
     p.add_argument("--out", default="timeline.html", help="Output HTML path.")
-    p.add_argument("--title", default="Agent oversight console - timeline")
+    p.add_argument("--title", default="agentwatch - timeline")
     p.add_argument("--subtitle", default="Peek/history: parsed transcript + detector findings + work-repo commits")
     return p
 

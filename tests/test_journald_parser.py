@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from oversight_console.events import LAN_DROP
-from oversight_console.groundtruth.journald import iter_lan_drops, parse_lines
+from agentwatch.events import LAN_DROP
+from agentwatch.groundtruth.journald import iter_lan_drops, parse_lines
 
 SAMPLE = Path(__file__).parent / "fixtures" / "journald" / "sample_journal.jsonl"
 

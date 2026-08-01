@@ -3,9 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from oversight_console.events import REASONING, TOOL_USE, NormalizedEvent
-from oversight_console.findings import Finding
-from oversight_console.timeline import (
+from agentwatch.events import REASONING, TOOL_USE, NormalizedEvent
+from agentwatch.findings import Finding
+from agentwatch.timeline import (
     COMMIT,
     FINDING,
     TRANSCRIPT,

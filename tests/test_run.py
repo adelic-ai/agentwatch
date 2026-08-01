@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from oversight_console.findings import FindingsStore
-from oversight_console.run import Config, run_once
+from agentwatch.findings import FindingsStore
+from agentwatch.run import Config, run_once
 
 FIXTURES = Path(__file__).parent / "fixtures" / "e2e"
 AGENT_UID = 3000

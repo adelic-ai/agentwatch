@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys
 from typing import Iterable, Optional, TextIO
 
-from oversight_console.findings import Finding
+from agentwatch.findings import Finding
 
 
 def format_notification(findings: Iterable[Finding]) -> Optional[str]:
@@ -15,7 +15,7 @@ def format_notification(findings: Iterable[Finding]) -> Optional[str]:
     findings = list(findings)
     if not findings:
         return None
-    lines = [f"[oversight] {len(findings)} new finding(s):"]
+    lines = [f"[agentwatch] {len(findings)} new finding(s):"]
     for f in sorted(findings, key=lambda x: x.ts):
         lines.append(f"  - {f.detector:16s} {f.summary}")
     return "\n".join(lines)

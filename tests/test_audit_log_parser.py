@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from oversight_console.events import EXEC
-from oversight_console.groundtruth.audit_log import parse_lines
+from agentwatch.events import EXEC
+from agentwatch.groundtruth.audit_log import parse_lines
 
 SAMPLE = Path(__file__).parent / "fixtures" / "audit_logs" / "audit.log.sample"
 

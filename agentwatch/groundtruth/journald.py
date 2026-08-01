@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Iterable, Iterator
 
-from oversight_console.events import LAN_DROP, GroundTruthEvent, ParseStats
+from agentwatch.events import LAN_DROP, GroundTruthEvent, ParseStats
 
 _JOURNAL_KIND = "journal"
 

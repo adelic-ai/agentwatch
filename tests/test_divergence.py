@@ -1,7 +1,7 @@
 import unittest
 
-from oversight_console.events import REASONING, TOOL_USE, NormalizedEvent
-from oversight_console.reconciler.divergence import reconcile_divergence
+from agentwatch.events import REASONING, TOOL_USE, NormalizedEvent
+from agentwatch.reconciler.divergence import reconcile_divergence
 
 
 def reasoning(ts, text):

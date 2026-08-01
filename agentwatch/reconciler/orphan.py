@@ -22,8 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from oversight_console.events import EXEC, GroundTruthEvent, NormalizedEvent, TOOL_USE
-from oversight_console.reconciler.process_tree import ProcessTree
+from agentwatch.events import EXEC, GroundTruthEvent, NormalizedEvent, TOOL_USE
+from agentwatch.reconciler.process_tree import ProcessTree
 
 DEFAULT_WINDOW_SECONDS = 15.0
 

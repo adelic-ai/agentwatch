@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
 
-from oversight_console.events import NormalizedEvent
-from oversight_console.findings import Finding
+from agentwatch.events import NormalizedEvent
+from agentwatch.findings import Finding
 
 TRANSCRIPT = "transcript"
 FINDING = "finding"

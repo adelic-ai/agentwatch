@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from oversight_console.events import REASONING, TOOL_USE, NormalizedEvent
+from agentwatch.events import REASONING, TOOL_USE, NormalizedEvent
 
 # Claude Code's standard tool vocabulary, seeded so a claim can be recognized even if the
 # matching tool_use never actually happens (which is exactly the case worth catching). Extended

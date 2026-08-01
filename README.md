@@ -1,7 +1,7 @@
-# Agent oversight console
+# agentwatch
 
 A quiet-by-default oversight console for a hands-off autonomous coding agent, per
-`~/inbox/oversight-console-design.md`. Three modes, one of which is new code:
+`~/inbox/agentwatch-v2-design.md` (v2; the v1 build was `~/inbox/oversight-console-design.md`). Three modes, one of which is new code:
 
 1. **Silent detector** *(this repo's new work)* - watches the agent's telemetry, surfaces
    exceptions only.
@@ -10,13 +10,13 @@ A quiet-by-default oversight console for a hands-off autonomous coding agent, pe
    interleaved.
 
 Peek and History are one viewer (`web/render_timeline.py`) at different scope; the detector
-(`oversight_console/`) is the actual new build. See `DECISIONS.md` for every judgment call made
+(`agentwatch/`) is the actual new build. See `DECISIONS.md` for every judgment call made
 along the way, and `NEEDS-HUMAN.md` for anything that needed a human (empty = nothing has).
 
 ## Layout
 
 ```
-oversight_console/
+agentwatch/
   events.py              NormalizedEvent / GroundTruthEvent - the shapes everything else reads
   adapters/
     base.py              TranscriptAdapter interface
@@ -53,17 +53,17 @@ available on the build VM, and it also means zero supply-chain surface for a sec
 
 ```sh
 # one detector pass
-python3 -m oversight_console.cli \
+python3 -m agentwatch.cli \
   --agent-uid "$(id -u agent-username)" \
   --transcript-glob '~/.claude/projects/*/*.jsonl' \
   --audit-log /Users/Shared/agent-telemetry/audit.log \
   --journal /Users/Shared/agent-telemetry/journal.jsonl \
   --needs-human ~/work/NEEDS-HUMAN.md \
   --findings ~/work/findings.jsonl \
-  --state ~/.oversight_console_state.json
+  --state ~/.agentwatch_state.json
 
 # same, but polling every 30s instead of running once
-python3 -m oversight_console.cli ... --watch --interval 30
+python3 -m agentwatch.cli ... --watch --interval 30
 ```
 
 Prints nothing when there's nothing new to say. When there is, one line per new finding to

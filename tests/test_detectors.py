@@ -2,15 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from oversight_console.detectors.agent_flag import parse_entries, read_entries
-from oversight_console.detectors.lan_reach import detect_lan_reach
-from oversight_console.detectors.self_mod import (
+from agentwatch.detectors.agent_flag import parse_entries, read_entries
+from agentwatch.detectors.lan_reach import detect_lan_reach
+from agentwatch.detectors.self_mod import (
     check_self_modification,
     update_baseline,
 )
-from oversight_console.detectors.trifecta import detect_lethal_trifecta
-from oversight_console.events import EXEC, LAN_DROP, GroundTruthEvent
-from oversight_console.findings import (
+from agentwatch.detectors.trifecta import detect_lethal_trifecta
+from agentwatch.events import EXEC, LAN_DROP, GroundTruthEvent
+from agentwatch.findings import (
     agent_flag_finding,
     lan_reach_finding,
     self_mod_finding,

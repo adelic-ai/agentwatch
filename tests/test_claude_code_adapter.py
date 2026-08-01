@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from oversight_console.adapters.claude_code import ClaudeCodeAdapter
-from oversight_console.events import REASONING, TOOL_USE
+from agentwatch.adapters.claude_code import ClaudeCodeAdapter
+from agentwatch.events import REASONING, TOOL_USE
 
 FIXTURE = Path(__file__).parent / "fixtures" / "transcripts" / "basic_session.jsonl"
 

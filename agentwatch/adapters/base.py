@@ -11,7 +11,7 @@ import abc
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from oversight_console.events import NormalizedEvent, ParseStats
+from agentwatch.events import NormalizedEvent, ParseStats
 
 
 class TranscriptAdapter(abc.ABC):

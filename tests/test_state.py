@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from oversight_console.state import load_state, save_state
+from agentwatch.state import load_state, save_state
 
 
 class StateTest(unittest.TestCase):

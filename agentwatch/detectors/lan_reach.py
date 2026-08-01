@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
-from oversight_console.events import LAN_DROP, GroundTruthEvent
+from agentwatch.events import LAN_DROP, GroundTruthEvent
 
 
 def detect_lan_reach(ground_truth_events: Iterable[GroundTruthEvent]) -> List[GroundTruthEvent]:

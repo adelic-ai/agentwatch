@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from oversight_console.findings import Finding, FindingsStore
+from agentwatch.findings import Finding, FindingsStore
 
 
 def finding(fid, ts=1.0, summary="x"):
