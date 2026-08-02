@@ -207,3 +207,77 @@ not a secret or a generated artifact, and `tests/test_acceptance_fixtures.py` - 
 done" test per design doc v2 §5 - reads it directly; a gitignored acceptance fixture would make the
 acceptance test unrunnable from a fresh clone, which defeats its point as a permanent regression
 test.
+
+---
+
+# Gemini CLI adapter (branch `feat/gemini-adapter`)
+
+Per `~/dev/gemini-capsule/GEMINI-ADAPTER-SPEC.md`. Entries prefixed `G`.
+
+## G1: step 0 is emitted as a script for the human, not run by me
+
+`sudo` on this box requires a password and the assistant's shell has no TTY (`tty` → `not a tty`),
+so a primed `sudo -v` in the human's terminal never reaches it — established during the Gemini
+Capsule build (its D6). Every root step here — `incus exec`, `ausearch` — is a reviewed script under
+`scripts/`, run by the human, with output read back from `/tmp`. Cost: a turnaround per probe.
+
+## G2: the spec's inline probe leaked prompt text; rewritten
+
+`GEMINI-ADAPTER-SPEC.md` §1 states its probe "prints key-paths and value *types* only, never string
+values, so no prompt content leaves the container." Its shape-dump pass does exactly that. Its
+*second* pass does not:
+
+```python
+k = obj.get("body") or obj.get("name") or obj.get("event.name") or list(obj)[0]
+kinds[str(k)[:60]] = ...
+```
+
+In an OTel LogRecord `body` **is** the log message. For a prompt-logging record that is prompt text,
+so this prints up to 60 characters of prompt into output whose entire purpose is to be pasted
+somewhere and committed. The intent was right and one line contradicted it.
+
+`scripts/probe_telemetry.py` reads a record-kind discriminator only from known non-free-text keys
+(`event.name`, `event_name`, `name`, `gen_ai.operation.name`), and prints the value **only** if it
+matches `^[A-Za-z0-9_.:-]{1,64}$`. Anything else becomes `<suppressed:non-identifier>`. Identifier
+shape is a weak guarantee, so it is applied *on top of* a key allowlist rather than instead of one.
+
+## G3: auditd is prompt-bearing here too — the spec does not say so
+
+The spec flags `telemetry.jsonl` as prompt-bearing (Capsule D8) and treats auditd as merely "real".
+On this system auditd is prompt-bearing for the same reason: the agent is invoked as
+
+```
+gemini --skip-trust -p '<prompt>'
+```
+
+so the prompt is **argv[2] of a recorded execve**. Anyone treating "sanitize the telemetry" as
+sufficient and dumping `ausearch -k capsule` into a fixture would leak the same content through the
+plane assumed to be safe.
+
+`scripts/probe_audit_inventory.py` collects **`comm` and `exe` only, never argv**. Nothing is lost
+for §4: `RuntimeScope._is_internal_allowlisted` already matches on `comm` / `basename(exe)` and
+never looks at arguments, so the allowlist can be built entirely from names.
+
+## G4: synthetic fixtures, not sanitized real data
+
+Test fixtures are hand-written to match the structure the types-only probe reveals. Real telemetry
+and auditd are used **only** for a final local validation run, whose counts are recorded here and
+whose data is never committed.
+
+Rejected alternative: pull real data and scrub it (`~/dev/sift`, claudescope `sanitize.py`). `sift`
+needs Python 3.11 and the box is 3.10 with no `uv`, but the deciding reason is not tooling — a
+scrubbing step means real prompt data transits the working tree and correctness then depends on the
+scrubber being complete. A synthetic fixture has nothing to scrub: the leak class is designed out
+rather than cleaned up afterwards.
+
+## G5: `.gitignore` hardened — the private fixtures were unprotected
+
+`fixtures/` (the real v1 Claude run) is kept private and `tests/test_acceptance_fixtures.py` skips
+when it is absent — but `fixtures/` was **not** in `.gitignore`. Nothing leaked, because the
+directory does not exist in this clone; the protection was its absence, not a rule. A working tree
+that had it plus a `git add -A` would have recommitted the data that was deliberately scrubbed out.
+Added `/fixtures/`, `/fixtures-gemini/`, `telemetry*.jsonl`, `*.ausearch`, `/capture/`.
+
+Note that the older entry above — "v2: fixtures/ (the real v1 run) is committed, not gitignored" —
+is **superseded**. It is left in place because it records the reasoning at the time; this entry is
+the correction.

@@ -4,3 +4,14 @@ __pycache__/
 findings.jsonl
 *.local.json
 .DS_Store
+
+# Real capture data — prompt-bearing, never committed (see DECISIONS.md "Gemini adapter" §G3/G5).
+# `fixtures/` is the private v1 Claude run; the acceptance test skips when it is absent. It was
+# NOT previously ignored, so a stray `git add -A` in a working tree that had it would have
+# recommitted the data that was deliberately scrubbed out of this repo.
+/fixtures/
+/fixtures-gemini/
+telemetry*.jsonl
+*.telemetry.jsonl
+*.ausearch
+/capture/
