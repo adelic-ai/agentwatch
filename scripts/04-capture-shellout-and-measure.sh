@@ -113,12 +113,19 @@ else
 fi
 echo "auto-approval flag: ${APPROVE[*]:-<none>}"
 
+# The prompt names the tool and the exact command rather than asking for the outcome ("count the
+# lines here"). Two reasons, neither of them about making the result look better: a vaguer prompt
+# can be satisfied by `read_many_files` + counting in-process, which is precisely the null result
+# 03 already produced and would burn another human cycle to re-learn; and a fixed command keeps the
+# capture's argv deterministic and reviewable, which matters for a file that is prompt-bearing on
+# both planes. What is under test is whether the reconciler correlates an exec with its tool_call,
+# not whether the model picks the right tool unaided.
 RUN_EPOCH="$(date '+%s')"
 RUN_START="$(date '+%H:%M:%S')"
 say "3. THE SHELL-OUT RUN (audit window starts ${RUN_START})"
 set +e
 sudo incus exec ${GC} "${P[@]}" -- su - agent -c \
-  "cd ${WS} && timeout 180 gemini --skip-trust ${APPROVE[*]:-} -p 'Use a shell command to count the lines in each file in the current directory. Reply with only the total number of lines.'"
+  "cd ${WS} && timeout 180 gemini --skip-trust ${APPROVE[*]:-} -p 'Use the run_shell_command tool to run this exact command: wc -l *.txt . Then reply with only the total number of lines.'"
 RC=$?
 set -e
 echo "gemini exit status: ${RC}"
