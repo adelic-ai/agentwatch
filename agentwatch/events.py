@@ -14,6 +14,18 @@ from typing import Any, Optional
 REASONING = "reasoning"
 TOOL_USE = "tool_use"
 
+# Gemini CLI's telemetry plane carries neither reasoning text nor tool calls (see
+# adapters/gemini_cli.py): prompts are recorded only as a length + id, and per-tool-call detail is
+# not present in any observed record. These two kinds let that adapter emit what it *does* see
+# without pretending it is one of the above.
+#
+# Nothing downstream consumes them yet, and that is deliberate rather than unfinished:
+# reconciler/orphan.py keys on TOOL_USE and reconciler/divergence.py on REASONING, so a PROMPT or
+# MODEL_CALL event is inert - it can populate a timeline and feed parse-health record counts, but
+# it cannot authorize an exec. A conversation-only plane must not be able to.
+PROMPT = "prompt"
+MODEL_CALL = "model_call"
+
 
 @dataclass(frozen=True)
 class NormalizedEvent:

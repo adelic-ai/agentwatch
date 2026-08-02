@@ -1,0 +1,257 @@
+{
+  "hrTime": [
+    1785632020,
+    100000000
+  ],
+  "hrTimeObserved": [
+    1785632020,
+    100000000
+  ],
+  "resource": {
+    "_rawAttributes": [
+      [
+        "service.name",
+        "gemini-cli"
+      ]
+    ],
+    "_asyncAttributesPending": false
+  },
+  "instrumentationScope": {
+    "name": "gemini-cli"
+  },
+  "attributes": {
+    "session.id": "00000000-0000-4000-8000-000000000001",
+    "installation.id": "00000000-0000-4000-8000-000000000002",
+    "interactive": false,
+    "event.name": "gemini_cli.config",
+    "event.timestamp": "2026-08-01T20:53:40.100Z",
+    "model": "SYNTHETIC-MODEL",
+    "embedding_model": "SYNTHETIC-EMBED",
+    "sandbox_enabled": false,
+    "core_tools_enabled": "",
+    "approval_mode": "default",
+    "api_key_enabled": true,
+    "vertex_ai_enabled": false,
+    "log_user_prompts_enabled": false,
+    "debug_mode": false,
+    "mcp_servers_count": 0,
+    "output_format": "text"
+  },
+  "_body": "SYNTHETIC BODY - config",
+  "_attributesCount": 16,
+  "_droppedAttributesCount": 0,
+  "_isReadonly": false,
+  "_logRecordLimits": {
+    "attributeCountLimit": 128,
+    "attributeValueLengthLimit": null
+  }
+}{
+  "hrTime": [
+    1785632021,
+    200000000
+  ],
+  "hrTimeObserved": [
+    1785632021,
+    200000000
+  ],
+  "resource": {
+    "_rawAttributes": [],
+    "_asyncAttributesPending": false
+  },
+  "instrumentationScope": {
+    "name": "gemini-cli"
+  },
+  "attributes": {
+    "session.id": "00000000-0000-4000-8000-000000000001",
+    "installation.id": "00000000-0000-4000-8000-000000000002",
+    "interactive": false,
+    "event.name": "gemini_cli.user_prompt",
+    "event.timestamp": "2026-08-01T20:53:41.200Z",
+    "prompt_id": "synthetic-prompt-0001",
+    "prompt_length": 42
+  },
+  "_body": "SYNTHETIC BODY - user prompt",
+  "_attributesCount": 7,
+  "_droppedAttributesCount": 0,
+  "_isReadonly": false,
+  "_logRecordLimits": {
+    "attributeCountLimit": 128,
+    "attributeValueLengthLimit": null
+  }
+}{
+  "hrTime": [
+    1785632022,
+    300000000
+  ],
+  "hrTimeObserved": [
+    1785632022,
+    300000000
+  ],
+  "resource": {
+    "_rawAttributes": [],
+    "_asyncAttributesPending": false
+  },
+  "instrumentationScope": {
+    "name": "gemini-cli"
+  },
+  "spanContext": {
+    "traceId": "0000000000000000000000000000000a",
+    "spanId": "000000000000000b",
+    "traceFlags": 1
+  },
+  "attributes": {
+    "session.id": "00000000-0000-4000-8000-000000000001",
+    "event.name": "gemini_cli.api_request",
+    "event.timestamp": "2026-08-01T20:53:42.300Z",
+    "model": "SYNTHETIC-MODEL",
+    "prompt_id": "synthetic-prompt-0001",
+    "auth_type": "synthetic-auth"
+  },
+  "_body": "SYNTHETIC BODY - api request",
+  "_attributesCount": 6,
+  "_droppedAttributesCount": 0,
+  "_isReadonly": false,
+  "_logRecordLimits": {
+    "attributeCountLimit": 128,
+    "attributeValueLengthLimit": null
+  }
+}{
+  "hrTime": [
+    1785632036,
+    988000000
+  ],
+  "hrTimeObserved": [
+    1785632036,
+    988000000
+  ],
+  "resource": {
+    "_rawAttributes": [],
+    "_asyncAttributesPending": false
+  },
+  "instrumentationScope": {
+    "name": "gemini-cli"
+  },
+  "attributes": {
+    "session.id": "00000000-0000-4000-8000-000000000001",
+    "event.name": "gemini_cli.api_response",
+    "event.timestamp": "2026-08-01T20:53:56.988Z",
+    "model": "SYNTHETIC-MODEL",
+    "prompt_id": "synthetic-prompt-0001",
+    "status_code": 200,
+    "duration_ms": 10202.0,
+    "input_token_count": 11,
+    "output_token_count": 3,
+    "cached_content_token_count": 0,
+    "thoughts_token_count": 0,
+    "tool_token_count": 0,
+    "total_token_count": 14
+  },
+  "_body": "SYNTHETIC BODY - api response",
+  "_attributesCount": 13,
+  "_droppedAttributesCount": 0,
+  "_isReadonly": false,
+  "_logRecordLimits": {
+    "attributeCountLimit": 128,
+    "attributeValueLengthLimit": null
+  }
+}{
+  "resource": {
+    "_rawAttributes": [],
+    "_asyncAttributesPending": false
+  },
+  "scopeMetrics": [
+    {
+      "scope": {
+        "name": "gemini-cli",
+        "version": ""
+      },
+      "metrics": [
+        {
+          "descriptor": {
+            "name": "gemini_cli.session.count",
+            "type": "COUNTER",
+            "description": "synthetic counter",
+            "unit": "",
+            "valueType": 1
+          },
+          "aggregationTemporality": 1,
+          "dataPointType": 3,
+          "dataPoints": [
+            {
+              "attributes": {
+                "session.id": "00000000-0000-4000-8000-000000000001",
+                "installation.id": "00000000-0000-4000-8000-000000000002",
+                "interactive": false
+              },
+              "startTime": [
+                1785632020,
+                0
+              ],
+              "endTime": [
+                1785632036,
+                0
+              ],
+              "value": 1
+            }
+          ],
+          "isMonotonic": true
+        }
+      ]
+    }
+  ]
+}{
+  "attributes": {
+    "session.id": "00000000-0000-4000-8000-000000000001"
+  },
+  "links": [],
+  "events": [],
+  "_droppedAttributesCount": 0,
+  "_droppedEventsCount": 0,
+  "_droppedLinksCount": 0,
+  "status": {
+    "code": 0
+  },
+  "endTime": [
+    1785632036,
+    990000000
+  ],
+  "_ended": true,
+  "_duration": [
+    14,
+    690000000
+  ],
+  "name": "llm_call",
+  "kind": 0,
+  "startTime": [
+    1785632022,
+    300000000
+  ],
+  "resource": {
+    "_rawAttributes": [],
+    "_asyncAttributesPending": false
+  },
+  "instrumentationScope": {
+    "name": "gemini-cli",
+    "version": "0.53.1"
+  },
+  "_spanContext": {
+    "traceId": "0000000000000000000000000000000a",
+    "spanId": "000000000000000b",
+    "traceFlags": 1
+  },
+  "_spanLimits": {
+    "attributeCountLimit": 128,
+    "attributeValueLengthLimit": null
+  },
+  "_attributesCount": 1,
+  "_startTimeProvided": false,
+  "_performanceStartTime": 1.5,
+  "_performanceOffset": 2.5,
+  "_attributeValueLengthLimit": null
+}{
+  "hrTime": [
+    1785632037,
+    0
+  ],
+  "attributes": {
+    "session.id": "00000000-0000-4000-8000-0000

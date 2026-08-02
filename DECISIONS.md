@@ -281,3 +281,66 @@ Added `/fixtures/`, `/fixtures-gemini/`, `telemetry*.jsonl`, `*.ausearch`, `/cap
 Note that the older entry above — "v2: fixtures/ (the real v1 run) is committed, not gitignored" —
 is **superseded**. It is left in place because it records the reasoning at the time; this entry is
 the correction.
+
+## G6: the telemetry format, measured (Gemini CLI 0.53.1)
+
+`telemetry.jsonl` is not JSONL. It is **concatenated pretty-printed JSON objects**, multi-line,
+no separator — `}{` at the seam. 21 records, 0 decode failures, in 199,534 bytes / 4,410 lines.
+Three object families interleaved, distinguished structurally rather than by a type tag:
+
+| family | discriminator | carries |
+|---|---|---|
+| LogRecord | `attributes` + `_body` | the useful one — `event.name`, ids, tokens |
+| Metric | `scopeMetrics` | counters only |
+| Span | `name` + `startTime` + `_spanContext` | timing envelope, duplicates the request/response pair |
+
+Record kind is `attributes["event.name"]`: `gemini_cli.config`, `.user_prompt`, `.api_request`,
+`.api_response`, `.model_routing`, `.startup_stats`, `.ripgrep_fallback`,
+`.plan.approval_mode_duration`, plus `gen_ai.client.inference.operation.details`. Timestamps are
+`hrTime: [seconds, nanoseconds]` — already epoch, no ISO parsing on the hot path.
+
+Worth stating precisely, because the imprecise version is misleading: a line-based parser does not
+extract *nothing*. Pretty-printed arrays put bare scalars on their own lines, so `json.loads` on a
+line "succeeds" and returns a stray integer. It extracts zero **records**. "Some lines parsed" is
+exactly the evidence that would convince someone JSONL parsing half-works here; it does not work at
+all. `tests/test_gemini_cli_adapter.py` asserts both halves.
+
+## G7: §1's make-or-break question is NOT settled — and the sample is why
+
+**Measured result:** no per-tool-call record in any of the 21. The only tool-shaped key paths are
+`gen_ai.tool.definitions` (the tool schemas *offered* to the model), `tool_token_count` (accounting),
+and `core_tools_enabled` (config, empty string).
+
+**But that sample cannot answer the question.** The telemetry came from the Capsule's batch-11 run:
+
+```
+gemini --skip-trust -p 'Reply with exactly one word: pineapple. Ignore this token: …'
+```
+
+A prompt that invokes no tools. Absence of tool-call records in a run with no tool calls is not
+evidence about the format, and reporting it as "conversation-only, settled" would be a measurement
+artifact promoted to an architectural conclusion. Two hints point the other way:
+`gemini_cli.ripgrep_fallback` exists as an event kind (so *some* tool activity is telemetered), and
+`gen_ai.tool.definitions` shows tools were offered to the model in this very run.
+
+**Consequence for the build:** the adapter ships with `EMITS_TOOL_USE = False` and no tool-call
+branch, because a speculative `gemini_cli.tool_call` mapping is an untested path whose failure mode
+is *fabricating authorizations* — the mirror image of a false CONFIRMED, and worse, since a false
+authorization silences a real orphan. `adapters/claude_code.py` already refuses to invent an
+untested second version path for the same reason; this follows it.
+
+Step 0b (`scripts/01-probe-tool-call-shape.sh`) settles it with a benign **tool-using** run.
+
+## G8: parse-health's "tool_use craters" check must not be applied to Gemini unmodified
+
+`reconciler/parse_health.py` sets `degraded=True` when `exec_count >= 10 and tool_use_count == 0`,
+reasoning that a tool-free exec-heavy run is implausible and therefore extraction is broken. For a
+runtime whose self-report plane *structurally* cannot express a tool call, that is not drift — it is
+the steady state, and every run would be permanently marked degraded. The check would be measuring
+the format, not the parse.
+
+`GeminiCliAdapter.EMITS_TOOL_USE` is the flag a caller consults. Wiring it into `assess_parse_health`
+is deferred to step 4, when there is a reconcile path to test it against; recording it here so the
+interaction is not rediscovered as a bug. Note the fail-safe direction is currently *safe* — a
+permanently-degraded plane downgrades CONFIRMED to NONE, i.e. under-alerts — so this is a fidelity
+problem, not a security one.

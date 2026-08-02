@@ -1,0 +1,256 @@
+"""Gemini CLI telemetry adapter — concatenated OTel objects, NOT line-delimited JSON.
+
+FORMAT (measured against Gemini CLI 0.53.1, `scripts/00-probe-gemini-planes.sh`; see
+DECISIONS.md "Gemini adapter" G6 for the full structural dump):
+
+The outfile is named `telemetry.jsonl` and is not JSONL. It is a stream of **concatenated
+pretty-printed JSON objects**, multi-line, with no separator — `}{` at the seam. A
+`readlines()` + `json.loads` loop yields zero records without erroring, which is exactly the
+silent-underextraction failure `reconciler/parse_health.py` exists to catch. Parsing is a
+`json.JSONDecoder().raw_decode()` loop over the whole text.
+
+Three object families are interleaved, distinguished structurally, not by a type tag:
+
+    LogRecord  `attributes` + `_body` (+ optional `spanContext`)   — the useful one
+    Metric     `scopeMetrics`                                       — counters, no per-event detail
+    Span       `name` + `startTime` + `_spanContext`                — timing envelope for a call
+
+Record kind lives at `attributes["event.name"]`: observed values are `gemini_cli.config`,
+`gemini_cli.user_prompt`, `gemini_cli.api_request`, `gemini_cli.api_response`,
+`gemini_cli.model_routing`, `gemini_cli.startup_stats`, `gemini_cli.ripgrep_fallback`,
+`gemini_cli.plan.approval_mode_duration`, and `gen_ai.client.inference.operation.details`.
+
+TIMESTAMPS are `hrTime: [seconds, nanoseconds]`, already Unix epoch — no ISO parsing needed
+(`attributes["event.timestamp"]` carries an ISO string as a fallback for records lacking hrTime).
+
+PROMPT-BEARING — WHAT THIS ADAPTER DELIBERATELY DOES NOT READ:
+`_body` is the OTel log message and, for prompt-logging records, contains prompt text;
+Capsule D8 established that `logPrompts:false` does not scrub it. This adapter therefore
+**never reads `_body`** and never populates `NormalizedEvent.text`. `gemini_cli.user_prompt`
+carries `prompt_length` (an int) and `prompt_id` (an opaque id), which is everything the
+timeline needs and none of the content. Sanitization by construction rather than by scrubbing:
+there is no path from prompt text into a `NormalizedEvent`, so no downstream persistence of a
+finding can leak it.
+
+NO TOOL-CALL PATH — AND WHY THAT IS NOT AN OVERSIGHT (§1, the make-or-break question):
+`EMITS_TOOL_USE` is False. The telemetry sample this was built from contains no per-tool-call
+record — but that sample comes from a run that invoked no tools (`gemini -p 'Reply with exactly
+one word: pineapple'`), so it is not evidence that the format lacks them, and there are hints it
+does not lack them (`gemini_cli.ripgrep_fallback` exists as an event kind; `gen_ai.tool.definitions`
+shows tools being offered to the model). Writing a speculative `gemini_cli.tool_call` branch now
+would mean shipping an untested code path whose failure mode is inventing `claimed_action` values
+the reconciler would then treat as authorizing — false CONFIRMEDs' evil twin, false authorizations.
+`adapters/claude_code.py` makes the same call for the same reason ("inventing a second, untested
+code path would be worse than not having one"). Step 0b (`scripts/01-probe-tool-call-shape.sh`)
+settles it with a tool-using benign run; the branch lands when there is a real record to key off.
+
+Until then the Gemini self-report plane is **conversation-only**, and callers must treat it as
+such — see `EMITS_TOOL_USE` and DECISIONS.md G8 for why that must not be fed to
+`parse_health.assess_parse_health` unmodified.
+
+PARSESTATS SEMANTICS DIFFER FROM THE CLAUDE ADAPTER: there are no lines, so `lines_total` counts
+**records** and `lines_skipped` counts records that decoded but yielded nothing usable. `skip_rate`
+stays meaningful (and is arguably tighter than a line-based rate); anything reading it as a line
+count is reading it wrong. `source_line` is a record index, for the same reason.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Iterable, Iterator, Optional
+
+from agentwatch.adapters.base import TranscriptAdapter
+from agentwatch.events import MODEL_CALL, PROMPT, NormalizedEvent, ParseStats
+
+# Versions this adapter has been validated against real telemetry for. Mirrors
+# claude_code.KNOWN_VERSIONS: recorded and fed to parse-health, does not branch parsing.
+KNOWN_VERSIONS = frozenset({"0.53.1"})
+
+# event.name values mapped to an emitted event. Anything else decodes fine and is ignored, the
+# same way claude_code.py ignores mode/ai-title/attachment lines — not an error, just nothing to
+# extract.
+_PROMPT_EVENTS = frozenset({"gemini_cli.user_prompt"})
+_CALL_EVENTS = frozenset({
+    "gemini_cli.api_request",
+    "gemini_cli.api_response",
+    "gen_ai.client.inference.operation.details",
+})
+
+# Token-count attributes copied into tool_input (structured ints, never text).
+_TOKEN_KEYS = (
+    "input_token_count",
+    "output_token_count",
+    "cached_content_token_count",
+    "thoughts_token_count",
+    "tool_token_count",
+    "total_token_count",
+    "gen_ai.usage.input_tokens",
+    "gen_ai.usage.output_tokens",
+)
+
+
+def _ts_from_hrtime(raw: object) -> Optional[float]:
+    """`[seconds, nanoseconds]` -> float epoch seconds. None if not that shape."""
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return None
+    secs, nanos = raw
+    if not isinstance(secs, (int, float)) or not isinstance(nanos, (int, float)):
+        return None
+    if isinstance(secs, bool) or isinstance(nanos, bool):
+        return None
+    return float(secs) + float(nanos) / 1e9
+
+
+def _ts_from_iso(raw: object) -> Optional[float]:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def iter_records(text: str) -> Iterator[tuple[Optional[dict], bool]]:
+    """Stream concatenated JSON objects. Yields `(obj, ok)`; `(None, False)` ends the stream.
+
+    Tolerates leading/trailing whitespace, trailing garbage, and a truncated final record — the
+    file is appended live, so reading it mid-write is the normal case, not the exceptional one.
+    A truncated tail costs one record, never an exception.
+    """
+    decoder = json.JSONDecoder()
+    index = 0
+    length = len(text)
+    while index < length:
+        remainder = text[index:]
+        stripped = remainder.lstrip()
+        if not stripped:
+            return
+        consumed = length - len(stripped)
+        try:
+            obj, offset = decoder.raw_decode(stripped)
+        except ValueError:
+            yield None, False
+            return
+        index = consumed + offset
+        yield (obj if isinstance(obj, dict) else None), True
+
+
+class GeminiCliAdapter(TranscriptAdapter):
+    """`(telemetry text) -> [NormalizedEvent]`, defensively. See the module docstring."""
+
+    #: This runtime's self-report plane cannot currently express a tool call (see the module
+    #: docstring). Callers must consult this before applying parse-health's "tool_use craters"
+    #: check, which would otherwise read a structurally tool-free plane as broken extraction.
+    EMITS_TOOL_USE = False
+
+    def __init__(self) -> None:
+        self._stats = ParseStats()
+
+    @property
+    def stats(self) -> ParseStats:
+        return self._stats
+
+    def parse_lines(self, lines: Iterable[str], source_file: str = "") -> Iterator[NormalizedEvent]:
+        """Note the interface mismatch: the base class is line-oriented and this format is not.
+
+        The lines are rejoined and decoded as one stream. `parse_file` in the base class still
+        works unchanged, which is why the interface is honored rather than widened.
+        """
+        self._stats = ParseStats()
+        text = "".join(lines)
+
+        for index, (obj, ok) in enumerate(iter_records(text)):
+            if not ok:
+                # Truncated or corrupt tail. Counted so parse-health can see it; not an error.
+                self._stats.lines_total += 1
+                self._stats.record_skip("truncated_or_undecodable_tail")
+                return
+            self._stats.lines_total += 1
+            if obj is None:
+                self._stats.record_skip("record_not_a_json_object")
+                continue
+            yield from self._events_from_record(obj, source_file, index)
+
+    def _events_from_record(
+        self, obj: dict, source_file: str, index: int
+    ) -> Iterator[NormalizedEvent]:
+        attributes = obj.get("attributes")
+        if not isinstance(attributes, dict):
+            # Metric records (`scopeMetrics`) and anything else without attributes. Valid shapes
+            # carrying no per-event detail — dropped deliberately, and not counted as a skip, so
+            # the skip-rate keeps meaning "records I should have understood and didn't".
+            return
+
+        self._stats.record_version(_scope_version(obj))
+
+        event_name = attributes.get("event.name")
+        if not isinstance(event_name, str):
+            # A Span carries `name` instead; it duplicates the api_request/api_response pair's
+            # timing and adds nothing the reconciler uses.
+            return
+
+        ts = _ts_from_hrtime(obj.get("hrTime"))
+        if ts is None:
+            ts = _ts_from_iso(attributes.get("event.timestamp"))
+        if ts is None:
+            self._stats.record_skip("missing_or_bad_timestamp")
+            return
+
+        session_id = attributes.get("session.id")
+        prompt_id = attributes.get("prompt_id")
+        session_id = session_id if isinstance(session_id, str) else None
+        prompt_id = prompt_id if isinstance(prompt_id, str) else None
+
+        if event_name in _PROMPT_EVENTS:
+            self._stats.events_emitted += 1
+            length = attributes.get("prompt_length")
+            yield NormalizedEvent(
+                ts=ts,
+                kind=PROMPT,
+                session_id=session_id,
+                uuid=prompt_id,
+                # `text` stays empty by design — the prompt itself is in `_body`, which this
+                # adapter never reads. Length is metadata; content is not carried at all.
+                tool_input={"prompt_length": length} if isinstance(length, int) else {},
+                raw_kind=event_name,
+                source_file=source_file,
+                source_line=index,
+            )
+            return
+
+        if event_name in _CALL_EVENTS:
+            self._stats.events_emitted += 1
+            detail: dict = {}
+            model = attributes.get("model") or attributes.get("gen_ai.request.model")
+            if isinstance(model, str) and model:
+                detail["model"] = model
+            for key in _TOKEN_KEYS:
+                value = attributes.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    detail[key] = value
+            status = attributes.get("status_code") or attributes.get("http.status_code")
+            if isinstance(status, int) and not isinstance(status, bool):
+                detail["status_code"] = status
+            yield NormalizedEvent(
+                ts=ts,
+                kind=MODEL_CALL,
+                session_id=session_id,
+                uuid=prompt_id,
+                tool_input=detail,
+                raw_kind=event_name,
+                source_file=source_file,
+                source_line=index,
+            )
+            return
+
+        # Known-but-uninteresting kinds (config, startup_stats, model_routing, ripgrep_fallback,
+        # plan.approval_mode_duration). Valid records with nothing the reconciler consumes.
+
+
+def _scope_version(obj: dict) -> Optional[str]:
+    scope = obj.get("instrumentationScope")
+    if isinstance(scope, dict):
+        version = scope.get("version")
+        if isinstance(version, str) and version:
+            return version
+    return None
