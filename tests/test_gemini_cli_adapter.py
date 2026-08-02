@@ -63,7 +63,7 @@ class GeminiCliAdapterTest(unittest.TestCase):
         events, _ = _events()
         tool_uses = [e for e in events if e.kind == TOOL_USE]
         self.assertEqual(len(tool_uses), 1)
-        self.assertEqual(tool_uses[0].tool_name, "synthetic_list_directory")
+        self.assertEqual(tool_uses[0].tool_name, "synthetic_run_shell_command")
         self.assertEqual(tool_uses[0].tool_input.get("call_id"), "synthetic-call-0001")
         self.assertTrue(GeminiCliAdapter.EMITS_TOOL_USE)
 
@@ -74,7 +74,7 @@ class GeminiCliAdapterTest(unittest.TestCase):
         """
         events, _ = _events()
         tool_use = next(e for e in events if e.kind == TOOL_USE)
-        self.assertEqual(tool_use.tool_input.get("duration_ms"), 12.5)
+        self.assertEqual(tool_use.tool_input.get("duration_ms"), 56.0)
         self.assertIs(tool_use.tool_input.get("success"), True)
 
     def test_tool_use_carries_no_command_claim(self):

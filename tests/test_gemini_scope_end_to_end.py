@@ -9,11 +9,22 @@ Everything here is SYNTHETIC (see DECISIONS.md G14): hand-built records shaped l
 step-0 structural probe revealed, with fabricated paths and placeholder argv. No prompt text, no
 real uids beyond the range shape, nothing to sanitize.
 
-The fixture encodes the four outcomes the tuning has to tell apart, all under one runtime pid:
-    ls    - inside a tool_call's time window        -> matched
-    rg    - runtime-internal, no tool_call possible -> NONE
-    git   - plausible tool work, unauthorized       -> CONFIRMED  (the G17 trap)
-    curl  - unexplained network egress              -> CONFIRMED  (must never be allowlisted)
+The fixture encodes the outcomes the tuning has to tell apart, all under one runtime pid:
+    bash  - the shell a run_shell_command spawned    -> CONFIRMED  (it SHOULD be matched; G23)
+    wc    - the command that shell actually ran      -> never evaluated at all (G23, fork gap)
+    rg    - runtime-internal, no tool_call possible  -> NONE
+    git   - plausible tool work, unauthorized        -> CONFIRMED  (the G17 trap)
+    curl  - unexplained network egress               -> CONFIRMED  (must never be allowlisted)
+
+The first two are NOT the behaviour anyone wants - they are the measured behaviour, pinned so it
+cannot drift unnoticed while the number looks clean. Until G23 this file asserted the opposite:
+an `ls` that exec'd 100ms AFTER a tool_call reporting a 12.5ms duration was pinned as `matched`.
+That arrangement is physically impossible for a process the call spawned - the call had already
+ended - so the assertion proved the *mechanism* runs, never that this runtime feeds it. It is the
+G21 failure exactly: a fixture that invents an ordering the probe never showed, and code trusting
+it. The timings here now come from the shell-out capture (DECISIONS.md G23): the shell execs 27ms
+BEFORE its own end-stamped record, inside the call's [ts - duration_ms, ts] interval, and the
+command it runs hangs off a forked pid that never execs.
 """
 from __future__ import annotations
 
@@ -21,7 +32,7 @@ import unittest
 from pathlib import Path
 
 from agentwatch.adapters.gemini_cli import GeminiCliAdapter
-from agentwatch.events import EXEC
+from agentwatch.events import EXEC, TOOL_USE
 from agentwatch.groundtruth import audit_log
 from agentwatch.reconciler import runtime_scope as rs
 from agentwatch.reconciler.orphan import reconcile_orphans
@@ -108,9 +119,65 @@ class GeminiScopeEndToEndTest(unittest.TestCase):
         n_tuned = sum(1 for v in tuned.values() if v == Verdict.CONFIRMED)
         self.assertLess(n_tuned, n_baseline)
 
-    def test_tool_call_window_authorizes_the_exec_it_covers(self):
+    def test_end_stamped_tool_call_fails_to_authorize_the_exec_it_caused(self):
+        """CHARACTERIZATION — this is the bug, pinned, not the desired behaviour (G23).
+
+        `gemini_cli.tool_call` is written when the call COMPLETES, so its timestamp is the end of
+        the call. `reconcile_orphans` authorizes forward, `[tu.ts, tu.ts + window]`. A shell the
+        call spawned therefore execs *before* its own authorizing record and no forward window can
+        reach it, however wide. Measured: 27ms early, against a 15s window.
+
+        If someone fixes the correlation, this test breaks — that is its job. Change it to assert
+        `matched` then, and only then.
+        """
         tuned, _ = _verdicts(self.gt_events, self.transcript, **TUNED)
-        self.assertEqual(tuned["ls"], "matched")
+        self.assertEqual(tuned["bash"], Verdict.CONFIRMED)
+
+    def test_the_exec_lands_inside_the_calls_own_execution_interval(self):
+        """The positive half of the finding above, and the evidence for what a fix must use.
+
+        Asserted from `duration_ms` rather than from an invented start-stamped record, because a
+        start-stamped record is a shape this runtime has never produced (G21's rule). The reconciler
+        does not consume this interval yet; the decision to make it two-sided is the human's.
+        """
+        tool_use = next(e for e in self.transcript if e.kind == TOOL_USE)
+        duration = tool_use.tool_input["duration_ms"] / 1000.0
+        # The tool's shell, not the `su - agent` login shell - both are `bash` at the agent uid,
+        # and the login one execs seconds earlier. Selected by parentage (the runtime pid spawned
+        # it) rather than by name, which is the same distinction the reconciler itself draws.
+        runtime_pid = next(
+            e.pid for e in self.gt_events if e.kind == EXEC and e.comm == "node" and e.uid == AGENT_UID
+        )
+        shell = next(
+            e for e in self.gt_events
+            if e.kind == EXEC and e.comm == "bash" and e.ppid == runtime_pid
+        )
+        self.assertLess(shell.ts, tool_use.ts, "the shell execs before its own record")
+        self.assertGreaterEqual(shell.ts, tool_use.ts - duration)
+
+    def test_a_fork_that_never_execs_drops_the_real_command_out_of_scope(self):
+        """CHARACTERIZATION — the second half of G23, and the more dangerous half.
+
+        The audit rule records `execve` only. A shell that forks a subshell which then execs the
+        command produces an exec whose ppid has NO record anywhere, so `ProcessTree.ancestry`
+        terminates immediately and the chain never reaches the runtime pid. `in_scope` is False, so
+        `reconcile_orphans` skips the event *entirely* - it is not matched, not CONFIRMED, not a
+        suppressed candidate. The command the agent actually ran is absent from the audit trail the
+        reconciler produces, and nothing in the output says so.
+
+        This is the failure mode the whole scoping design is supposed to refuse: `RuntimeScope`
+        fails OPEN when it cannot find the runtime at all, on the stated grounds that a detector
+        must never answer "I could not find what I was looking for" by evaluating nothing. Per-pid,
+        a broken ancestry chain is that same situation, and here it fails CLOSED and silently.
+        """
+        wc = next(e for e in self.gt_events if e.kind == EXEC and e.comm == "wc")
+        tree = ProcessTree(self.gt_events)
+        self.assertEqual(tree.ancestry(wc.pid), [wc.pid, wc.ppid])
+        self.assertNotIn(wc.ppid, {e.pid for e in self.gt_events if e.kind == EXEC})
+
+        tuned, scope = _verdicts_by_pid(self.gt_events, self.transcript, **TUNED)
+        self.assertFalse(scope.in_scope(wc.pid))
+        self.assertNotIn(wc.pid, tuned)
 
     def test_runtime_internal_exec_is_explained_away(self):
         tuned, _ = _verdicts(self.gt_events, self.transcript, **TUNED)
