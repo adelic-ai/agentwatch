@@ -92,8 +92,10 @@ sudo incus exec ${GC} "${P[@]}" -- su - agent -c 'python3 /tmp/probe_telemetry.p
 sudo incus exec ${GC} "${P[@]}" -- rm -f /tmp/probe_telemetry.py
 
 say "5. AUDIT — this run's window only (§4 / GAP 2)"
+. "${HERE}/lib-idmap.sh"
+derive_idmap_range
 sudo ausearch -k capsule -ts "${RUN_START}" 2>/dev/null \
-  | python3 "${HERE}/probe_audit_inventory.py" \
+  | python3 "${HERE}/probe_audit_inventory.py" "${CAPSULE_UID_BASE}" "${CAPSULE_UID_END}" \
   || echo "no audit records in this window at all — that is itself the GAP 2 answer"
 
 say "6. GAP 2 DIAGNOSTIC — does the agent runtime EVER appear in the audit stream?"

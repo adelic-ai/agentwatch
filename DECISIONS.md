@@ -545,3 +545,58 @@ contradict it. The result would be a clean, confident, meaningless zero.
 `scripts/03-capture-and-measure.sh` uses `-i` and says why at the call site;
 `measure_reconcile.py` fails loudly on an empty agent-uid exec set rather than reporting a zero it
 cannot justify.
+
+## G16: deriving the uid range is now structural, not conventional — the third instance
+
+Step 0b's re-run confirmed the audit fix works (53 syscalls, `comm=node` 4, `gemini` 2, `timeout` 2
+— GAP 2 resolved, §4 groundable). It also exposed the **third** hardcoded-range bug, this one mine:
+`probe_audit_inventory.py` defaulted `UID_LO/UID_HI` to the range measured when it was written. The
+restore moved the live range to `[1131072, 1196608)`, so every real exec was classified
+out-of-range and the "§4 vocabulary" section came back **empty while the data was sitting right
+there**.
+
+The three instances, same root each time — *a value read once and frozen, about a container whose
+identity can change under it*:
+
+| # | where | how it failed |
+|---|---|---|
+| 1 | Capsule §3.9, built from `volatile.idmap.base` | filtered on uid 0; would have watched host root |
+| 2 | the audit rule surviving a snapshot restore (G12) | filtered a dead range; plane blind, `auditctl -l` correct-looking |
+| 3 | `probe_audit_inventory.py` defaults | classified every in-range exec as out-of-range; empty vocabulary |
+
+Three times is a design defect, not three mistakes. **Fix made structural rather than
+conventional** — "remember to derive it" is what already failed three times:
+
+- `scripts/lib-idmap.sh` is the single implementation. Callers source it; `00`, `01` and `03` all
+  use it and none computes a range itself.
+- `probe_audit_inventory.py` now **requires** the range as arguments. A wrong default is worse than
+  no default: it fails quietly and looks like an answer, which is exactly how this survived a full
+  cycle unnoticed.
+- It also warns loudly on the signature of staleness — zero in-range execs while out-of-range ones
+  exist — and prints the uids it actually saw.
+- `measure_reconcile.py` refuses to report a number at all when the agent-uid exec set is empty,
+  rather than reporting a clean-looking zero.
+
+Audited the rest of the tree for the same shape: `runtime_scope.py` takes `agent_uid` as a
+parameter and hardcodes no range; `orphan.py` requires it (already non-defaulted, deliberately, per
+its own docstring); the remaining literals are synthetic test constants and prose in comments.
+
+## G17: what belongs in the §4 allowlist — and what must not
+
+The observed vocabulary suggests `node`, `gemini`, `git`, `sh`, `stat`, `ls`. Adding all of them
+would be a mistake, and the distinction is the whole point of the allowlist:
+
+**`_is_internal_allowlisted` silences a class of exec permanently.** That is correct for execs the
+self-report plane *structurally cannot* observe — the runtime re-execing itself, its npm
+self-update, its ripgrep attempt. It is wrong for execs a tool call *should* have authorized, since
+silencing those is indistinguishable from the agent doing something unexplained.
+
+`ls`, `stat` and `git` are exactly the shape a `gemini_cli.tool_call` ought to authorize. If they
+appear as CONFIRMED, the first question is not "add them to the allowlist" but **"why didn't the
+tool_call window authorize them?"** — a timestamp skew, a tool that runs in-process without an
+exec, or a genuine gap. Allowlisting them would paper over that and manufacture a clean number.
+
+So the tuning rule for §4: **add a name only if no tool_call could ever authorize it.** Everything
+else stays visible. `measure_reconcile.py` prints each CONFIRMED candidate's comm/exe and its
+attachment point precisely so each is judged individually rather than swept in as a batch — and it
+says so in its own output, because a suggested-additions list is very easy to paste wholesale.

@@ -14,7 +14,13 @@ Consequence for §4: the allowlist is built from process *names*, which is all
 
 Output of this script is structural and safe to commit.
 
-usage:  sudo ausearch -k capsule -ts today | python3 scripts/probe_audit_inventory.py [uid_lo] [uid_hi]
+THE RANGE IS A REQUIRED ARGUMENT, DELIBERATELY. It used to default to the range measured when this
+script was written. A snapshot restore then moved the container's idmap (DECISIONS.md G12) and the
+stale default silently classified every in-range exec as out-of-range: the "§4 vocabulary" section
+came back empty while the data was right there. A wrong default is worse than no default, because
+it fails quietly and looks like an answer. Callers derive the live range via scripts/lib-idmap.sh.
+
+usage:  sudo ausearch -k capsule -ts today | python3 scripts/probe_audit_inventory.py UID_LO UID_HI
 """
 from __future__ import annotations
 
@@ -22,8 +28,16 @@ import re
 import sys
 from collections import Counter
 
-UID_LO = int(sys.argv[1]) if len(sys.argv) > 1 else 1065536
-UID_HI = int(sys.argv[2]) if len(sys.argv) > 2 else 1131072
+if len(sys.argv) < 3:
+    sys.exit(
+        "usage: ausearch -k capsule | probe_audit_inventory.py UID_LO UID_HI\n"
+        "  The range is required - see the module docstring. Derive it live:\n"
+        "    . scripts/lib-idmap.sh && derive_idmap_range\n"
+        "    ... | python3 scripts/probe_audit_inventory.py \\\n"
+        "          \"$CAPSULE_UID_BASE\" \"$CAPSULE_UID_END\""
+    )
+UID_LO = int(sys.argv[1])
+UID_HI = int(sys.argv[2])
 
 # `\buid=` does not match `auid=`/`euid=`/`suid=`/`fsuid=` — there is no word boundary between a
 # letter and `u`, so only the standalone field matches.
@@ -87,6 +101,16 @@ def main():
             print(f"  {count:6d}  comm={comm:<20} exe={exe}")
         print("  If this section is large, the audit rule is capturing more than the capsule and")
         print("  §4's allowlist would be tuned against the wrong population.")
+
+    # A range that matches nothing while the capture is full of execs is the exact signature of a
+    # stale range. Loud, because the failure it guards against was invisible for a whole cycle.
+    if not in_range and out_of_range:
+        print("\n*** WARNING: ZERO in-range execs, but " + str(sum(out_of_range.values())) +
+              " out-of-range ones. ***")
+        print("    The range passed in is almost certainly stale - the container's idmap moves on")
+        print("    snapshot restore. Derive it live rather than reusing a recorded value:")
+        print("      . scripts/lib-idmap.sh && derive_idmap_range")
+        print("    Observed uids: " + str(sorted(uids)))
 
     print("\n=== NOTE ===")
     print("  argv deliberately not collected: `gemini -p '<prompt>'` puts prompt text in argv.")

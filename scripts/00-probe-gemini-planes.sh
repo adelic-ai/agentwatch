@@ -58,9 +58,14 @@ sudo incus exec ${GC} "${P[@]}" -- rm -f /tmp/probe_telemetry.py
 
 say "4. AUDIT EXEC INVENTORY — comm/exe names only, never argv (§4)"
 # ausearch needs root; the aggregation does not, so only ausearch is under sudo.
-sudo ausearch -k capsule -ts today 2>/dev/null | python3 "${HERE}/probe_audit_inventory.py" || {
+. "${HERE}/lib-idmap.sh"
+derive_idmap_range
+sudo ausearch -k capsule -ts today 2>/dev/null \
+  | python3 "${HERE}/probe_audit_inventory.py" "${CAPSULE_UID_BASE}" "${CAPSULE_UID_END}" || {
   echo "no audit records for today — widen the window and re-run just this part:"
-  echo "  sudo ausearch -k capsule | python3 scripts/probe_audit_inventory.py"
+  echo "  . scripts/lib-idmap.sh && derive_idmap_range"
+  echo "  sudo ausearch -k capsule | python3 scripts/probe_audit_inventory.py \\"
+  echo "        \"\$CAPSULE_UID_BASE\" \"\$CAPSULE_UID_END\""
 }
 
 say "DONE — step 0 complete.

@@ -46,12 +46,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "${OUT}"
 
-say "0. Derive the live agent uid (do NOT hardcode — G12 is exactly that mistake)"
-MAP="$(sudo incus config get ${GC} volatile.idmap.current "${P[@]}")"
-BASE="$(printf '%s' "$MAP" | grep -o '"Hostid":[0-9]*' | awk -F: 'NR==1{print $2}')"
-AGENT_UID=$((BASE + 1000))
-echo "container root uid : ${BASE}"
-echo "agent user uid     : ${AGENT_UID}   <- what the reconciler is given"
+say "0. Derive the live agent uid (do NOT hardcode — G12/G16 are exactly that mistake)"
+. "${HERE}/lib-idmap.sh"
+derive_idmap_range
+AGENT_UID="${CAPSULE_AGENT_UID}"
 
 say "1. Throwaway workspace"
 sudo incus exec ${GC} "${P[@]}" -- su - agent -c \
