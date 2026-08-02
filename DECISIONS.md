@@ -894,3 +894,67 @@ Both are the G21 rule violated again: **a synthetic fixture may fabricate values
 field's shape, an event ordering, or a field's location** — those are observations, and code gets
 written against them. The fixture is re-cut from this capture, and the field audit that found (2)
 is the routine that should run against every new capture, not a one-off.
+
+## G24: UNEVALUABLE — making the coverage hole visible is not fixing it, and the code says so
+
+G23 left an exec the reconciler could not place — `wc`, the command a `run_shell_command` shell
+actually ran — dropped from the output entirely while the run reported CONFIRMED = 0. This adds a
+fourth verdict so that stops being silent. Measured on the same two captures, no new run:
+
+    shell-out capture   matched 1   CONFIRMED 0   UNEVALUABLE 1   <- the wc
+    G20 benign capture  matched 0   CONFIRMED 0   UNEVALUABLE 0
+
+**UNEVALUABLE is not NONE, and the distinction is the whole point.** NONE says "the self-report
+plane structurally cannot observe this class of action, so its silence proves nothing" — a
+conclusion the reconciler earned. UNEVALUABLE says "I did not look." Filed under the same heading
+they would be indistinguishable in a count, which is how a coverage defect gets read as a clean
+result. It is marked in `verdict.py` as local vocabulary, not canon's three.
+
+### The rule is narrow on purpose, and the narrowness is the hard part
+
+The obvious rule — "ancestry chain ends at a pid with no exec record" — is **wrong**, because it is
+true of the legitimate noise as well. In the same capture the `su - agent` login shell's chain also
+dead-ends at a pid outside the audit rule's uid range. A rule that flags both would move most of a
+run's ambient noise into UNEVALUABLE, and a category that fires 19 times per run is one people learn
+to ignore — which hides the real one just as effectively as dropping it did.
+
+What separates them is whether the walk learned anything before it ran out:
+
+    login bash  [600771, 600769, …]   parent 600769 IS known (`su`, container-root uid)
+                                      -> traced to a non-runtime origin. A conclusion.
+    wc          [600813, 600812]      parent 600812 is a number and nothing else
+                                      -> nothing was learned. Not a conclusion.
+
+So: **the immediate parent has no exec record**, plus one structural exclusion — an exec that
+happened *before the runtime's first exec* cannot be a descendant of it, whatever its parentage
+looks like. That second clause is what keeps the G20 capture at 0 rather than sweeping in the whole
+login session, and it is provable rather than heuristic. (Caveat, recorded rather than hidden: a pid
+forked by the runtime's *pre-exec* incarnation — the few ms between fork and exec, 4ms in this
+capture — is placed out of scope rather than unevaluable.)
+
+Both numbers above are the evidence that the rule is tight enough to be worth having. A category
+justified only by the case that motivated it is not calibrated, it is fitted.
+
+### `is_orphan` stays False, and that caught a bug on the way in
+
+An UNEVALUABLE candidate is not an orphan: "orphan" asserts *no tool_use authorized this*, and the
+reconciler never asked. Setting `is_orphan=True` would manufacture an unmatched-looking event out of
+one nobody examined — a false positive dressed up as honesty.
+
+But `is_orphan=False` is also what `report_correlation` used to identify **matches**, so the first
+version of this change reported the unevaluable `wc` as an exec a tool_call had authorized: the
+exact inversion of the finding, produced by the fix for it. Both the summary counter and the
+correlation report now branch on the verdict first. The general shape is worth remembering — a
+boolean with two meanings ("matched" and "not asked") reads correctly right up until a third state
+exists.
+
+### What this does and does not buy
+
+It does not close the hole. An exec behind a subshell is still unexaminable, and an attacker's
+`( curl … )` is still not evaluated — it is now *counted*, which is the difference between a
+detector that misses something and one that misses it quietly. The fix for the hole itself is
+recording `fork`/`clone` so parentage is complete, which is a Capsule audit-rule change with a
+volume cost; `scripts/05-measure-fork-volume.sh` measures that cost, and the decision is the
+human's (NEEDS-HUMAN G-NH7). Every surface that reports the count says so, including the one-line
+summary of the aggregate finding — a number a reader can mistake for "examined and fine" is exactly
+what this entry exists to prevent.

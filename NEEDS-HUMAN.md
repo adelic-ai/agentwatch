@@ -196,10 +196,47 @@ finding. Telling them apart needs parentage the exec plane does not carry.
 
 **Recommendation:** record `fork`/`clone` alongside `execve` in the Capsule audit rule, after
 measuring the volume on an idle container — that closes the hole at the source and needs no change
-in this repo. If the volume is unacceptable, the fallback is to make a broken chain *visible*
-rather than correct: report unevaluable in-scope-uid execs as their own category, so the output
-stops implying it examined everything. That is a smaller change and I can do it on request; it
-improves honesty, not coverage.
+in this repo.
+
+### Item 1 — DONE (2026-08-02): the honesty fix is in, and it is not the fix
+
+`Verdict.UNEVALUABLE` (DECISIONS.md G24). Execs dropped for want of a traceable ancestry are now
+reported as their own category instead of vanishing: the shell-out capture reads **matched 1,
+CONFIRMED 0, UNEVALUABLE 1** with `wc` named, and the 34-exec benign capture reads 0 — the category
+is tight enough not to flood, verified on both. `run.py` emits one aggregate finding per run under
+its own detector.
+
+**This changes visibility, not coverage.** An exec behind a subshell is still unexaminable; a
+`( curl … )` is still not evaluated, it is merely counted now. Nothing below is closed by it.
+
+### Item 2 — READY TO RUN: measure the fork/clone volume (`scripts/05-measure-fork-volume.sh`)
+
+**Real terminal** (sudo needs a TTY):
+
+```
+bash scripts/05-measure-fork-volume.sh 2>&1 | tee /tmp/fork-volume.log
+```
+
+**Measurement only — it does not enable anything.** It loads one rule under its own key
+(`forkprobe`, never touching the `capsule` rule), counts two windows, and deletes the rule again
+via a trap installed *before* the rule is added, so it comes out on every exit path including
+Ctrl-C — then re-lists to prove it is gone and says loudly if it is not. Nothing is written to
+`/etc/audit`, so a reboot clears it regardless.
+
+**Two windows, because one number would hide the answer:** *idle* (~2 min, the standing cost that
+decides adopt/reject) and *active* (one benign shell-out run, the burst cost). It prints counts and
+rates only — never argv or comm inventories, since this rule fires on everything the agent uid does
+and its records are as prompt-bearing as the capsule key's.
+
+Two traps it deliberately avoids, both of which would have produced a reassuring zero: filtering on
+`auid` (container processes arrive with `auid=unset`, so such a rule matches nothing) and naming
+only `fork` (on x86_64 that is really `clone`). It measures `fork,vfork,clone,clone3`, falling back
+if `clone3` is unknown to this auditctl, and prints which set it used.
+
+**What to do with the numbers:** if the idle rate is tolerable, adopt it Capsule-side and the
+coverage hole closes at the source. If idle is fine but active is not, the middle option is a rule
+scoped to the runtime's own subtree rather than the whole uid range — this probe deliberately
+measures the worst case.
 
 A deterministic correlation id would make all of this moot, and the plane half-carries one:
 `gen_ai.tool.call_id` exists on the tool_call span, but nothing in the exec chain references it.
