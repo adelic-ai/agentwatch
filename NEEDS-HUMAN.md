@@ -163,7 +163,50 @@ Recorded because each is a real bound on the result, and none is visible from th
 
 ---
 
-## G-NH6 — OPEN — run the shell-out capture (`scripts/04-capture-shellout-and-measure.sh`)
+## G-NH6 — RESOLVED (2026-08-02) — the shell-out capture ran; correlation does NOT fire
+
+`matched = 0`, CONFIRMED 20 → 1. The prediction in the script header was right (the tool_call
+record is END-stamped, so the exec precedes its own authorizer by 27ms and a forward-only window
+cannot reach it), and a second, unpredicted cause turned up: the command the agent actually ran
+(`wc`) hangs off a forked pid with no exec record, so its ancestry chain dead-ends and it is
+dropped from evaluation entirely. Full reasoning and numbers in DECISIONS.md G23. The two decisions
+this leaves are G-NH7.
+
+---
+
+## G-NH7 — OPEN, NOT BLOCKING — two fixes, and why neither was made unilaterally
+
+Both come out of G23. Each changes detector semantics, so each is yours to call. Ordered by how
+much they matter, which is the reverse of how obvious they are.
+
+**1. The ancestry gap (the dangerous one).** An exec whose parent forked without exec'ing is
+invisible to `ProcessTree`, so `in_scope` is False and the event is skipped — not matched, not
+CONFIRMED, not reported as suppressed. Anything behind a subshell, pipeline or `&&` chain inherits
+that invisibility, which makes it an evasion path rather than a recall miss. The naive repair
+("unknown ppid ⇒ evaluate") re-admits exactly the login-shell noise the scoping removes: in this
+capture the `su - agent` bash dead-ends the same way. The structurally correct fix is to record
+`fork`/`clone` alongside `execve` so parentage is complete — a Capsule-side audit-rule change with
+a real volume cost, which is why it is a decision and not a patch. **Recommendation:** measure the
+volume on a quiet container first; if it is tolerable, this closes the hole properly and nothing in
+this repo needs to change.
+
+**2. The end-stamped window.** `[tu.ts, tu.ts + 15s]` should be `[tu.ts - duration_ms, tu.ts + w]`
+for this runtime. Building the interval from the call's own reported duration is principled rather
+than a fudge — it is the span the call actually occupied — but it is a change to a primitive Claude
+also uses, where records are start-stamped and the current shape is correct. So it wants to be
+per-adapter, not a global widening. **Recommendation:** do this second, not first. Alone it takes
+`matched` 0 → 1 and CONFIRMED 1 → 0, i.e. it produces a run that looks fully validated while the
+command the agent actually executed is still invisible. A clean number for the wrong reason is the
+failure mode this build keeps catching itself in.
+
+A deterministic correlation id would beat both, and this plane does not carry one:
+`gen_ai.tool.call_id` exists on the telemetry side but nothing in the exec chain references it.
+Getting one would mean the runtime stamping an env var into the tool's process — an upstream
+change, not something reconciliation can recover.
+
+---
+
+## G-NH6 — (original request, kept for the record) — run the shell-out capture
 
 **Real terminal** (sudo needs a TTY):
 

@@ -116,6 +116,50 @@
     "attributeValueLengthLimit": null
   }
 }{
+  "name": "tool_call",
+  "kind": 0,
+  "startTime": [
+    1785632023,
+    371000000
+  ],
+  "endTime": [
+    1785632023,
+    398000000
+  ],
+  "_duration": [
+    0,
+    27000000
+  ],
+  "_ended": true,
+  "status": {
+    "code": 0
+  },
+  "attributes": {
+    "gen_ai.operation.name": "tool_call",
+    "gen_ai.tool.name": "synthetic_run_shell_command",
+    "gen_ai.tool.call_id": "synthetic-call-0001",
+    "gen_ai.tool.description": "SYNTHETIC tool description",
+    "gen_ai.agent.name": "SYNTHETIC",
+    "gen_ai.agent.description": "SYNTHETIC agent description",
+    "gen_ai.conversation.id": "00000000-0000-4000-8000-000000000001"
+  },
+  "instrumentationScope": {
+    "name": "gemini-cli",
+    "version": "v1"
+  },
+  "_spanContext": {
+    "traceId": "00000000000000000000000000000001",
+    "spanId": "0000000000000001",
+    "traceFlags": 1
+  },
+  "parentSpanContext": {
+    "traceId": "00000000000000000000000000000001",
+    "spanId": "0000000000000002",
+    "traceFlags": 1
+  },
+  "events": [],
+  "links": []
+}{
   "hrTime": [
     1785632023,
     400000000
@@ -137,9 +181,6 @@
     "event.timestamp": "2026-08-01T20:53:43.400Z",
     "prompt_id": "synthetic-prompt-0001",
     "function_name": "synthetic_run_shell_command",
-    "gen_ai.tool.name": "synthetic_run_shell_command",
-    "gen_ai.tool.call_id": "synthetic-call-0001",
-    "gen_ai.tool.description": "SYNTHETIC tool description",
     "tool_type": "native",
     "duration_ms": 56,
     "success": true

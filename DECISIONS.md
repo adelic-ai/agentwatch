@@ -778,3 +778,100 @@ The honest summary of what is and is not established: the adapter parses real 0.
 scope tuning takes a benign run from 34 CONFIRMED to 0, and every allowlist entry is justified from
 observed data. The *matching* half of the reconciler has never run against a Gemini exec, because
 no tool call in the sampled run ever execed. That is the next capture, not a caveat to bury.
+
+## G23: the correlation does NOT fire — matched = 0 on a real shell-out, for two independent reasons
+
+The capture G22 called for: one benign run forced through `run_shell_command`
+(`scripts/04-capture-shellout-and-measure.sh`), both planes windowed to that run, `agent` uid
+derived — 20 agent-uid execs, parse health clean (skip_rate 0.0%), telemetry windowed 65 → 14
+events by `--since`. The tool call itself succeeded: `run_shell_command`, `decision=accept`,
+`success=True`, `duration_ms=56`.
+
+    BASELINE (untuned, Claude scope config)   CONFIRMED = 20    matched = 0
+    TUNED    (GEMINI_* scope config, §4)      CONFIRMED = 1     matched = 0
+
+**The metric that mattered was `matched > 0`. It is 0.** The recall half of the detector did not
+fire against a real Gemini exec, and the one CONFIRMED is the shell that a tool_call *should* have
+authorized. A prediction was written into the script header before the run (that is why this reads
+as a result rather than a story); it was right, and a second cause turned up that nobody predicted.
+
+### Finding 1 — the tool_call record is END-stamped, so the exec precedes its own authorizer
+
+    +11.684s   bash   exec'd by the runtime, running the tool's command
+    +11.711s   TOOL_CALL run_shell_command   duration_ms=56   <- 27ms LATER
+
+`gemini_cli.tool_call` is written when the call completes. Its `ts` is the *end* of the call, so
+the interval in which anything the call spawned can have exec'd is `[ts - duration_ms, ts]` =
+`[+11.655, +11.711]` — entirely **before** the record. `reconciler/orphan.py` authorizes forward:
+`[tu.ts, tu.ts + 15s]`. The shell lands 27ms outside it, on the wrong side.
+
+No window tuning fixes this. Widening forward from 15s to any value never reaches an event that
+happened earlier; the sign is wrong, not the magnitude. Measured on both captures, the ordering is
+structural rather than jitter: the record consistently lands ~14ms after the `api_response` that
+requested the call, with `duration_ms` of work in between.
+
+The adapter's docstring claimed the opposite — "Authorization works completely… a
+name-and-timestamp tool_use is exactly as authorizing as a fully-detailed one." That was reasoned
+from §1's finding that `orphan.py` reads only `tu.ts`, and never checked which end of the call
+`tu.ts` refers to. It is corrected in place rather than quietly deleted.
+
+### Finding 2 — a fork that never execs breaks ancestry, and the real command vanishes
+
+The more consequential half, and it was not predicted:
+
+    +11.684s   pid=600811  ppid=600790  bash   <- in scope (child of the runtime), CONFIRMED
+    +11.684s   pid=600813  ppid=600812  wc     <- NOT IN SCOPE, NOT EVALUATED AT ALL
+
+`wc` is the command the agent actually ran. Its parent, pid 600812, appears in the entire capture
+only as a `ppid` — it forked from the shell and never exec'd. The audit rule records `execve` only,
+so that pid has no record, `ProcessTree.ancestry(600813)` terminates at `[600813, 600812]`, the
+chain never reaches a runtime pid, and `in_scope` is False. `reconcile_orphans` then skips the
+event *entirely*: not matched, not CONFIRMED, not even a suppressed candidate. It is absent from
+the reconciler's output, and nothing in that output says anything is missing.
+
+This contradicts the doctrine `runtime_scope.py` states about itself — scoping fails **open** when
+no runtime pid is found, on the grounds that "a security detector should never respond to 'I
+couldn't find what I was looking for' by evaluating nothing." Per-pid, a broken ancestry chain is
+exactly that situation, and here it fails **closed**, silently. An exec hidden behind a subshell —
+a pipeline, a `( … )` group, a `&&` chain — inherits the same invisibility, so this is an evasion
+path, not only a recall miss.
+
+**Why the fix is not obvious, and therefore not made here.** The naive repair ("unknown ppid ⇒ in
+scope") re-admits noise the scoping exists to remove: in this same capture the `su - agent` login
+shell (pid 600771) also dead-ends at a pid with no exec record, and would come back as a finding.
+Distinguishing the two needs parentage the exec plane does not carry. The structurally correct fix
+is to record `fork`/`clone` as well as `execve` — an audit-rule change on the Capsule side, with a
+volume cost — and that is the human's call. Written up in NEEDS-HUMAN G-NH7.
+
+### What a corrected window would and would not buy
+
+Computed against this capture, not applied:
+
+    bash  pid=600811   inside [ts-56ms, ts]   -> would match under a two-sided window
+    wc    pid=600813   inside [ts-56ms, ts]   -> still dropped: never evaluated, no window involved
+
+So fixing Finding 1 alone takes `matched` from 0 to 1 and CONFIRMED from 1 to 0 — a run that looks
+fully validated while the command the agent actually executed remains invisible. **That number
+would be worse than the current one, because it is clean for the wrong reason.** Fixing both is
+what the recall claim requires. Neither is done in this pass: changing the correlation rule during
+the run that is measuring the correlation rule would mean the measurement describes the patch.
+
+### The bound on all of this
+
+One shell-out, one host, one CLI version, one shape of shell command. The `matched = 0` result is
+the reliable part — a mechanism that fails on the simplest possible case does not need a second
+sample to be believed. The *causes* have single-sample confidence: `duration_ms` was 56ms on one
+call, and a different command shape (no subshell) might exec in the shell's own pid and never hit
+Finding 2 at all. Both findings predict specific, cheap checks, which is what makes them findings
+rather than hypotheses.
+
+### The fixture was asserting the opposite, and passing
+
+`tests/fixtures/gemini/` pinned an `ls` exec'ing 100ms *after* a tool_call that reported a 12.5ms
+duration — impossible for a process that call spawned. The test built on it
+(`test_tool_call_window_authorizes_the_exec_it_covers`) therefore proved the matching mechanism
+*runs*, never that this runtime feeds it, and it passed for as long as the fixture invented the
+ordering. G21's rule, restated: a synthetic fixture may fabricate values, but it may not invent a
+*shape* the probe never showed — and an event ordering is a shape. Re-cut against the capture, with
+the false assertion replaced by two characterization tests that pin the real behaviour, so it
+cannot drift back unnoticed while the number looks clean.

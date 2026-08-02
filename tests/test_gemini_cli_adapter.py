@@ -77,6 +77,44 @@ class GeminiCliAdapterTest(unittest.TestCase):
         self.assertEqual(tool_use.tool_input.get("duration_ms"), 56.0)
         self.assertIs(tool_use.tool_input.get("success"), True)
 
+    def test_tool_use_is_stamped_from_the_span_start(self):
+        """The authorizing timestamp comes from the call's span, not from the log record.
+
+        The log record is written when the call ENDS (fixture: .400, matching the real ~2ms lag
+        after the span closes at .398). Authorizing from it means the shell the call spawned
+        exec'd before its own authorizer — measured as `matched = 0` on a real run, DECISIONS.md
+        G23. The span's `startTime` (.371) is the timestamp that can authorize anything.
+        """
+        events, _ = _events()
+        tool_use = next(e for e in events if e.kind == TOOL_USE)
+        self.assertAlmostEqual(tool_use.ts, 1785632023.371, places=3)
+        self.assertEqual(tool_use.tool_input["stamp"], "span_start")
+        self.assertAlmostEqual(tool_use.tool_input["span_end"], 1785632023.398, places=3)
+
+    def test_one_tool_use_per_call_not_one_per_record(self):
+        """The span and the log record describe the SAME call. Emitting both would double-count
+        every tool call — the failure G20 already caught once, in the failed-execve pairs."""
+        events, _ = _events()
+        self.assertEqual(len([e for e in events if e.kind == TOOL_USE]), 1)
+
+    def test_without_a_span_it_falls_back_and_labels_the_timestamp_untrustworthy(self):
+        """Spans are a separate OTel export; a logs-only configuration is legitimate.
+
+        The fallback is the old end-stamped behaviour, which cannot authorize an exec the call
+        caused. It must not be silently indistinguishable from a good one — anything reasoning
+        about correlation can read `stamp` and know.
+        """
+        record = (
+            '{"hrTime": [1785632023, 400000000], "attributes": {'
+            '"event.name": "gemini_cli.tool_call", "function_name": "synthetic_tool",'
+            '"session.id": "s", "duration_ms": 56, "success": true}}'
+        )
+        events = list(GeminiCliAdapter().parse_lines([record]))
+        tool_use = next(e for e in events if e.kind == TOOL_USE)
+        self.assertAlmostEqual(tool_use.ts, 1785632023.400, places=3)
+        self.assertEqual(tool_use.tool_input["stamp"], "record_end_no_span")
+        self.assertNotIn("span_end", tool_use.tool_input)
+
     def test_tool_use_carries_no_command_claim(self):
         """The plane says WHICH tool ran, never WHAT it ran on — there is no arguments field.
 

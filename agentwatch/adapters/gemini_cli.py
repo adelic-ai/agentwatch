@@ -11,9 +11,15 @@ silent-underextraction failure `reconciler/parse_health.py` exists to catch. Par
 
 Three object families are interleaved, distinguished structurally, not by a type tag:
 
-    LogRecord  `attributes` + `_body` (+ optional `spanContext`)   — the useful one
+    LogRecord  `attributes` + `_body` (+ optional `spanContext`)   — per-event detail
     Metric     `scopeMetrics`                                       — counters, no per-event detail
-    Span       `name` + `startTime` + `_spanContext`                — timing envelope for a call
+    Span       `name` + `startTime`/`endTime` + `_spanContext`      — when the call ACTUALLY ran
+
+This list used to call the LogRecord "the useful one" and dismiss Spans as duplicating the
+api_request/api_response timing. That was wrong, and it cost the correlation: a `name == "tool_call"`
+span is the ONLY record carrying the call's **start** time and `gen_ai.tool.call_id`. The log record
+is written at the end of the call, so authorizing from it can never explain the exec the call
+caused. Both are read now — one event per call, stamped from the span. DECISIONS.md G23.
 
 Record kind lives at `attributes["event.name"]`: observed values are `gemini_cli.config`,
 `gemini_cli.user_prompt`, `gemini_cli.api_request`, `gemini_cli.api_response`,
@@ -34,20 +40,34 @@ there is no path from prompt text into a `NormalizedEvent`, so no downstream per
 finding can leak it.
 
 TOOL CALLS: PRESENT, BUT NAME-ONLY (§1, settled by step 0b — DECISIONS.md G10):
-A run that actually uses a tool emits `attributes["event.name"] == "gemini_cli.tool_call"`,
-carrying `function_name`, `gen_ai.tool.name`, `gen_ai.tool.call_id`, `tool_type`, `duration_ms`
-and `success`. So the plane is strong enough to authorize: `EMITS_TOOL_USE` is True.
+A run that actually uses a tool emits TWO records for the one call, and both are needed:
 
-The record is stamped at the **end** of the call (see `duration_ms` below), which is load-bearing
-for correlation and is why that field is carried into `tool_input`.
+    LogRecord `gemini_cli.tool_call`   function_name, tool_type, duration_ms, success, decision
+                                       — the outcome. Stamped at the END of the call.
+    Span      `name == "tool_call"`    startTime, endTime, gen_ai.tool.name, gen_ai.tool.call_id
+                                       — when it ran, and the only per-call id on this plane.
+
+They are paired into ONE `TOOL_USE`, stamped `span_start`. Emitting both would double-count every
+call; stamping from the log record alone authorizes nothing (G23). `gen_ai.tool.name` and
+`gen_ai.tool.call_id` do NOT appear on the log record — across 7 real records in two captures,
+never once — so the adapter reads them only where they exist.
+
+So the plane is strong enough to authorize: `EMITS_TOOL_USE` is True.
 
 What it does **not** carry is the arguments. There is no `function_args`-shaped key path in any
 record — the plane says *which tool* ran, never *what it ran on*. Two consequences, and the
 difference between them matters:
 
-  - Authorization works completely. `reconciler/orphan.py` authorizes on the tool_use *timestamp*
-    alone (`_authorizing_tool_use` compares only `tu.ts`); it never reads the name or the input.
-    A name-and-timestamp tool_use is exactly as authorizing as a fully-detailed one.
+  - Authorization does not depend on the arguments, and it works — but only because of the span.
+    `reconciler/orphan.py` authorizes on the tool_use *timestamp* alone (`_authorizing_tool_use`
+    compares only `tu.ts`); it never reads the name or the input. Measured on a real shell-out run
+    (DECISIONS.md G23): stamped from the span's `startTime`, the tool_call authorizes the shell it
+    spawned 4ms later — `matched` goes 0 -> 1, CONFIRMED 1 -> 0 on the same capture.
+
+    This docstring previously claimed "authorization works completely", reasoned from the fact
+    that only `tu.ts` is compared and never checking WHICH END of the call `tu.ts` denoted. It was
+    end-stamped, so nothing matched. The claim is true now for a different reason than it was
+    originally made.
   - `claimed_action` in the spec's sense — "the command/path the agent says it ran" — is **not
     available** and `tool_input` is therefore not a claim about a command. Evidence of *what* was
     executed exists only in the auditd plane. Anything that later wants to compare claimed-vs-actual
@@ -135,6 +155,74 @@ def _ts_from_iso(raw: object) -> Optional[float]:
         return None
 
 
+class _ToolSpan:
+    """A `tool_call` Span: the same call the log record describes, but stamped at both ends.
+
+    This is the record family the reconciler actually needs and the adapter used to throw away
+    (see the Span note in the module docstring). It carries `startTime`, `endTime`,
+    `gen_ai.tool.name` and `gen_ai.tool.call_id` — a real start timestamp and a per-call id.
+    """
+
+    __slots__ = ("start", "end", "name", "call_id")
+
+    def __init__(self, start: float, end: float, name: str, call_id: Optional[str]) -> None:
+        self.start = start
+        self.end = end
+        self.name = name
+        self.call_id = call_id
+
+
+# How far a log record may sit from its span's end and still be paired with it. Observed: 2.4ms
+# (the record is written immediately after the span closes). 0.5s is deliberately loose, because
+# the consequence of pairing too eagerly is bounded - a span is consumed at most once, both belong
+# to the same tool name, and the worst case is authorizing from a start time a few hundred ms off.
+# The consequence of pairing too tightly is silently falling back to the end-stamped timestamp,
+# which is the bug this exists to fix.
+_SPAN_PAIRING_TOLERANCE_SECONDS = 0.5
+
+
+def _tool_spans(text: str) -> list[_ToolSpan]:
+    """Collect `tool_call` spans in one pre-pass, so a log record can be paired with its span.
+
+    DELIBERATELY READS ONLY FOUR FIELDS. These spans also carry `gen_ai.tool.description` and
+    `gen_ai.agent.description`, and the *inference* spans alongside them carry
+    `gen_ai.system_instructions` — content this adapter has no business extracting, on the same
+    reasoning that keeps it out of `_body`.
+    """
+    spans: list[_ToolSpan] = []
+    for obj, ok in iter_records(text):
+        if not ok:
+            break
+        if obj is None or obj.get("name") != "tool_call":
+            continue
+        attributes = obj.get("attributes")
+        if not isinstance(attributes, dict):
+            continue
+        name = attributes.get("gen_ai.tool.name")
+        start = _ts_from_hrtime(obj.get("startTime"))
+        end = _ts_from_hrtime(obj.get("endTime"))
+        if not isinstance(name, str) or not name or start is None or end is None:
+            continue
+        call_id = attributes.get("gen_ai.tool.call_id")
+        spans.append(_ToolSpan(start, end, name, call_id if isinstance(call_id, str) else None))
+    return spans
+
+
+def _take_span(spans: list[_ToolSpan], ts: float, name: str) -> Optional[_ToolSpan]:
+    """The unconsumed span for `name` whose end is nearest `ts`. Consumed on return."""
+    best: Optional[_ToolSpan] = None
+    best_gap = _SPAN_PAIRING_TOLERANCE_SECONDS
+    for span in spans:
+        if span.name != name:
+            continue
+        gap = abs(ts - span.end)
+        if gap <= best_gap:
+            best, best_gap = span, gap
+    if best is not None:
+        spans.remove(best)
+    return best
+
+
 def iter_records(text: str) -> Iterator[tuple[Optional[dict], bool]]:
     """Stream concatenated JSON objects. Yields `(obj, ok)`; `(None, False)` ends the stream.
 
@@ -185,6 +273,9 @@ class GeminiCliAdapter(TranscriptAdapter):
         """
         self._stats = ParseStats()
         text = "".join(lines)
+        # Pre-pass: the authorizing timestamp lives in a different record from the tool call's
+        # detail, and spans are not guaranteed to precede their log record in file order.
+        spans = _tool_spans(text)
 
         for index, (obj, ok) in enumerate(iter_records(text)):
             if not ok:
@@ -196,10 +287,10 @@ class GeminiCliAdapter(TranscriptAdapter):
             if obj is None:
                 self._stats.record_skip("record_not_a_json_object")
                 continue
-            yield from self._events_from_record(obj, source_file, index)
+            yield from self._events_from_record(obj, source_file, index, spans)
 
     def _events_from_record(
-        self, obj: dict, source_file: str, index: int
+        self, obj: dict, source_file: str, index: int, spans: list
     ) -> Iterator[NormalizedEvent]:
         attributes = obj.get("attributes")
         if not isinstance(attributes, dict):
@@ -255,9 +346,29 @@ class GeminiCliAdapter(TranscriptAdapter):
                 self._stats.record_skip("tool_call_without_name")
                 return
             detail = {}
-            call_id = attributes.get("gen_ai.tool.call_id")
-            if isinstance(call_id, str) and call_id:
-                detail["call_id"] = call_id
+            # Re-stamp to the START of the call, from its span. The log record's own timestamp is
+            # the end of the call, which cannot authorize the exec the call itself caused - see
+            # DECISIONS.md G23, where this was measured as `matched = 0` on a real shell-out.
+            # The pairing is internal to one process's own records and fails safe: no span found
+            # means the old end-stamped timestamp, i.e. today's behaviour, marked as such.
+            span = _take_span(spans, ts, name)
+            if span is not None:
+                ts = span.start
+                detail["stamp"] = "span_start"
+                detail["span_end"] = span.end
+                if span.call_id:
+                    detail["call_id"] = span.call_id
+            else:
+                # Not an error: spans are a separate OTel export and a logs-only configuration is
+                # legitimate. But an authorization built on this timestamp is unreliable in the one
+                # direction that matters, so it says so rather than looking identical to a good one.
+                detail["stamp"] = "record_end_no_span"
+            # NOT read from this record: `gen_ai.tool.call_id` / `gen_ai.tool.name`. The adapter
+            # used to look for both here, and the synthetic fixture supplied them - but across 7
+            # real tool_call log records in two captures, neither has ever appeared. They exist
+            # only on the span (read above). Removed rather than left as a harmless fallback,
+            # because a read of a field that is never present documents a plane that does not
+            # exist; `function_name` is the real one. Third instance of DECISIONS.md G21.
             tool_type = attributes.get("tool_type")
             if isinstance(tool_type, str) and tool_type:
                 detail["tool_type"] = tool_type

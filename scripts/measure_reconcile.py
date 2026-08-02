@@ -89,18 +89,32 @@ def _nearest_tool_use(exec_ts, tool_uses):
     return best, exec_ts - best.ts
 
 
-def _covered_by_call_interval(exec_ts, tu):
-    """Is `exec_ts` inside `[tu.ts - duration_ms, tu.ts]` - the interval the tool actually ran in?
+def _call_interval(tu):
+    """`(start, end, label)` for the interval the tool actually ran in, however it is known.
 
-    `gemini_cli.tool_call` is stamped at COMPLETION and carries `duration_ms` (see the adapter), so
-    this - not the forward window - is the interval in which a process the tool spawned must have
-    exec'd. Reported as evidence about what a *correct* window would have to be; nothing in the
-    reconciler uses it yet.
+    Two cases, and the distinction is the whole of DECISIONS.md G23:
+      span-stamped  - `tu.ts` is the call's START (taken from its `tool_call` span) and `span_end`
+                      closes it. A process the call spawned execs inside `[ts, span_end]`.
+      end-stamped   - no span was paired, so `tu.ts` is the call's END and the interval can only be
+                      reconstructed backwards as `[ts - duration_ms, ts]`, which is entirely before
+                      the timestamp the reconciler authorizes forward from.
     """
-    duration = (tu.tool_input or {}).get("duration_ms")
-    if not isinstance(duration, (int, float)):
+    detail = tu.tool_input or {}
+    span_end = detail.get("span_end")
+    if isinstance(span_end, (int, float)):
+        return tu.ts, float(span_end), "span-stamped (ts = call start)"
+    duration = detail.get("duration_ms")
+    if isinstance(duration, (int, float)):
+        return tu.ts - float(duration) / 1000.0, tu.ts, "END-stamped (ts = call end, no span)"
+    return None, None, "no interval available"
+
+
+def _covered_by_call_interval(exec_ts, tu):
+    """Is `exec_ts` inside the call's real execution interval? None if it cannot be determined."""
+    start, end, _ = _call_interval(tu)
+    if start is None:
         return None
-    return tu.ts - (float(duration) / 1000.0) <= exec_ts <= tu.ts
+    return start <= exec_ts <= end
 
 
 def report_correlation(rows, tool_uses, t0):
@@ -113,10 +127,9 @@ def report_correlation(rows, tool_uses, t0):
     print("\n=== CORRELATION — the recall half (does a tool_call authorize a real exec?) ===")
     print(f"tool_calls on the self-report plane: {len(tool_uses)}")
     for tu in sorted(tool_uses, key=lambda e: e.ts):
-        detail = tu.tool_input or {}
-        duration = detail.get("duration_ms")
-        span = f"  duration_ms={duration}" if duration is not None else ""
-        print(f"  {tu.ts - t0:+9.3f}s  {tu.tool_name}{span}  (record is END-stamped)")
+        start, end, label = _call_interval(tu)
+        span = f"  interval={end - start:.3f}s" if start is not None else ""
+        print(f"  {tu.ts - t0:+9.3f}s  {tu.tool_name}{span}  [{label}]")
 
     matched = [c for c, _, _ in rows if not c.is_orphan]
     print(f"\nMATCHED (a tool_call authorized this exec): {len(matched)}")
@@ -125,8 +138,8 @@ def report_correlation(rows, tool_uses, t0):
         tu = c.matched_tool_use
         gap = ev.ts - tu.ts if tu else None
         inside = _covered_by_call_interval(ev.ts, tu) if tu else None
-        note = {True: "inside the call's own interval", False: "AFTER the call completed",
-                None: "call has no duration_ms"}[inside]
+        note = {True: "inside the call's own interval", False: "OUTSIDE the call's interval",
+                None: "call interval unknown"}[inside]
         print(f"  pid={ev.pid:<8} comm={ev.comm or '?':<14} via={tu.tool_name if tu else '?':<20} "
               f"gap={gap:+.3f}s  attached_at_pid={c.matched_pid}  [{note}]")
 

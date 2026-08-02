@@ -119,29 +119,26 @@ class GeminiScopeEndToEndTest(unittest.TestCase):
         n_tuned = sum(1 for v in tuned.values() if v == Verdict.CONFIRMED)
         self.assertLess(n_tuned, n_baseline)
 
-    def test_end_stamped_tool_call_fails_to_authorize_the_exec_it_caused(self):
-        """CHARACTERIZATION — this is the bug, pinned, not the desired behaviour (G23).
+    def test_a_tool_call_authorizes_the_shell_it_spawned(self):
+        """The recall half, and the reason G23 exists. Measured on a real run, not assumed.
 
-        `gemini_cli.tool_call` is written when the call COMPLETES, so its timestamp is the end of
-        the call. `reconcile_orphans` authorizes forward, `[tu.ts, tu.ts + window]`. A shell the
-        call spawned therefore execs *before* its own authorizing record and no forward window can
-        reach it, however wide. Measured: 27ms early, against a 15s window.
-
-        If someone fixes the correlation, this test breaks — that is its job. Change it to assert
-        `matched` then, and only then.
+        This only works because the tool_use is stamped from the call's SPAN (`startTime`), not
+        from the `gemini_cli.tool_call` log record, which is written when the call ends. Stamped
+        the old way the shell execs 27ms before its own authorizer and nothing matches - which is
+        what the first shell-out capture measured, `matched = 0`.
         """
         tuned, _ = _verdicts(self.gt_events, self.transcript, **TUNED)
-        self.assertEqual(tuned["bash"], Verdict.CONFIRMED)
+        self.assertEqual(tuned["bash"], "matched")
 
-    def test_the_exec_lands_inside_the_calls_own_execution_interval(self):
-        """The positive half of the finding above, and the evidence for what a fix must use.
+    def test_the_authorizing_timestamp_is_the_call_start_not_the_call_end(self):
+        """Guards the fix against a regression that would look like a cosmetic simplification.
 
-        Asserted from `duration_ms` rather than from an invented start-stamped record, because a
-        start-stamped record is a shape this runtime has never produced (G21's rule). The reconciler
-        does not consume this interval yet; the decision to make it two-sided is the human's.
+        Anyone who "simplifies" the adapter by dropping the span pairing gets the log record's
+        timestamp back, every shell-out stops matching, and the CONFIRMED count goes UP with no
+        error anywhere. Pinned as an ordering assertion so that change fails here instead.
         """
         tool_use = next(e for e in self.transcript if e.kind == TOOL_USE)
-        duration = tool_use.tool_input["duration_ms"] / 1000.0
+        self.assertEqual(tool_use.tool_input["stamp"], "span_start")
         # The tool's shell, not the `su - agent` login shell - both are `bash` at the agent uid,
         # and the login one execs seconds earlier. Selected by parentage (the runtime pid spawned
         # it) rather than by name, which is the same distinction the reconciler itself draws.
@@ -152,8 +149,11 @@ class GeminiScopeEndToEndTest(unittest.TestCase):
             e for e in self.gt_events
             if e.kind == EXEC and e.comm == "bash" and e.ppid == runtime_pid
         )
-        self.assertLess(shell.ts, tool_use.ts, "the shell execs before its own record")
-        self.assertGreaterEqual(shell.ts, tool_use.ts - duration)
+        self.assertGreaterEqual(shell.ts, tool_use.ts, "the shell execs after the call STARTS")
+        self.assertLessEqual(shell.ts, tool_use.tool_input["span_end"], "…and before it ends")
+        # …and the log record it was previously stamped from is later than the exec, which is the
+        # whole failure in one line.
+        self.assertLess(shell.ts, tool_use.ts + tool_use.tool_input["duration_ms"] / 1000.0)
 
     def test_a_fork_that_never_execs_drops_the_real_command_out_of_scope(self):
         """CHARACTERIZATION — the second half of G23, and the more dangerous half.
