@@ -58,12 +58,31 @@ class GeminiCliAdapterTest(unittest.TestCase):
         self.assertIn(PROMPT, kinds)
         self.assertIn(MODEL_CALL, kinds)
 
-    def test_emits_no_tool_use_and_says_so(self):
-        """A conversation-only plane must not manufacture authorizations."""
+    def test_emits_tool_use_that_can_authorize(self):
+        """Step 0b: gemini_cli.tool_call exists, so this plane CAN authorize an exec."""
         events, _ = _events()
-        self.assertEqual([e for e in events if e.kind == TOOL_USE], [])
+        tool_uses = [e for e in events if e.kind == TOOL_USE]
+        self.assertEqual(len(tool_uses), 1)
+        self.assertEqual(tool_uses[0].tool_name, "synthetic_list_directory")
+        self.assertEqual(tool_uses[0].tool_input.get("call_id"), "synthetic-call-0001")
+        self.assertTrue(GeminiCliAdapter.EMITS_TOOL_USE)
+
+    def test_tool_use_carries_no_command_claim(self):
+        """The plane says WHICH tool ran, never WHAT it ran on — there is no arguments field.
+
+        Pinned as a test because the tempting future change is to synthesize a command-ish string
+        into tool_input so something downstream can diff claimed-vs-actual commands. There is no
+        source for it; anything put there would be invented.
+        """
+        events, _ = _events()
+        tool_use = next(e for e in events if e.kind == TOOL_USE)
+        for forbidden in ("command", "args", "argv", "cmd", "path", "input"):
+            self.assertNotIn(forbidden, tool_use.tool_input)
+
+    def test_emits_no_reasoning(self):
+        """Gemini's telemetry carries no reasoning text, and the only text-ish field is _body."""
+        events, _ = _events()
         self.assertEqual([e for e in events if e.kind == REASONING], [])
-        self.assertFalse(GeminiCliAdapter.EMITS_TOOL_USE)
 
     def test_body_is_never_read(self):
         """`_body` is prompt-bearing. No event may carry it, in any field."""

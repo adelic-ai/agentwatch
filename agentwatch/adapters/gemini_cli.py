@@ -18,7 +18,8 @@ Three object families are interleaved, distinguished structurally, not by a type
 Record kind lives at `attributes["event.name"]`: observed values are `gemini_cli.config`,
 `gemini_cli.user_prompt`, `gemini_cli.api_request`, `gemini_cli.api_response`,
 `gemini_cli.model_routing`, `gemini_cli.startup_stats`, `gemini_cli.ripgrep_fallback`,
-`gemini_cli.plan.approval_mode_duration`, and `gen_ai.client.inference.operation.details`.
+`gemini_cli.plan.approval_mode_duration`, `gemini_cli.tool_call`, and
+`gen_ai.client.inference.operation.details`.
 
 TIMESTAMPS are `hrTime: [seconds, nanoseconds]`, already Unix epoch — no ISO parsing needed
 (`attributes["event.timestamp"]` carries an ISO string as a fallback for records lacking hrTime).
@@ -32,21 +33,26 @@ timeline needs and none of the content. Sanitization by construction rather than
 there is no path from prompt text into a `NormalizedEvent`, so no downstream persistence of a
 finding can leak it.
 
-NO TOOL-CALL PATH — AND WHY THAT IS NOT AN OVERSIGHT (§1, the make-or-break question):
-`EMITS_TOOL_USE` is False. The telemetry sample this was built from contains no per-tool-call
-record — but that sample comes from a run that invoked no tools (`gemini -p 'Reply with exactly
-one word: pineapple'`), so it is not evidence that the format lacks them, and there are hints it
-does not lack them (`gemini_cli.ripgrep_fallback` exists as an event kind; `gen_ai.tool.definitions`
-shows tools being offered to the model). Writing a speculative `gemini_cli.tool_call` branch now
-would mean shipping an untested code path whose failure mode is inventing `claimed_action` values
-the reconciler would then treat as authorizing — false CONFIRMEDs' evil twin, false authorizations.
-`adapters/claude_code.py` makes the same call for the same reason ("inventing a second, untested
-code path would be worse than not having one"). Step 0b (`scripts/01-probe-tool-call-shape.sh`)
-settles it with a tool-using benign run; the branch lands when there is a real record to key off.
+TOOL CALLS: PRESENT, BUT NAME-ONLY (§1, settled by step 0b — DECISIONS.md G10):
+A run that actually uses a tool emits `attributes["event.name"] == "gemini_cli.tool_call"`,
+carrying `function_name`, `gen_ai.tool.name`, `gen_ai.tool.call_id` and `tool_type`. So the plane
+is strong enough to authorize: `EMITS_TOOL_USE` is True.
 
-Until then the Gemini self-report plane is **conversation-only**, and callers must treat it as
-such — see `EMITS_TOOL_USE` and DECISIONS.md G8 for why that must not be fed to
-`parse_health.assess_parse_health` unmodified.
+What it does **not** carry is the arguments. There is no `function_args`-shaped key path in any
+record — the plane says *which tool* ran, never *what it ran on*. Two consequences, and the
+difference between them matters:
+
+  - Authorization works completely. `reconciler/orphan.py` authorizes on the tool_use *timestamp*
+    alone (`_authorizing_tool_use` compares only `tu.ts`); it never reads the name or the input.
+    A name-and-timestamp tool_use is exactly as authorizing as a fully-detailed one.
+  - `claimed_action` in the spec's sense — "the command/path the agent says it ran" — is **not
+    available** and `tool_input` is therefore not a claim about a command. Evidence of *what* was
+    executed exists only in the auditd plane. Anything that later wants to compare claimed-vs-actual
+    *commands* (rather than claimed-vs-actual timing) cannot be built on this runtime's telemetry,
+    and should say so rather than degrade quietly.
+
+The arguments are plausibly inside `_body`, which is prompt-bearing and deliberately unread (see
+below). Recovering them would mean reading the field this adapter exists not to read.
 
 PARSESTATS SEMANTICS DIFFER FROM THE CLAUDE ADAPTER: there are no lines, so `lines_total` counts
 **records** and `lines_skipped` counts records that decoded but yielded nothing usable. `skip_rate`
@@ -60,7 +66,7 @@ from datetime import datetime
 from typing import Iterable, Iterator, Optional
 
 from agentwatch.adapters.base import TranscriptAdapter
-from agentwatch.events import MODEL_CALL, PROMPT, NormalizedEvent, ParseStats
+from agentwatch.events import MODEL_CALL, PROMPT, TOOL_USE, NormalizedEvent, ParseStats
 
 # Versions this adapter has been validated against real telemetry for. Mirrors
 # claude_code.KNOWN_VERSIONS: recorded and fed to parse-health, does not branch parsing.
@@ -70,6 +76,7 @@ KNOWN_VERSIONS = frozenset({"0.53.1"})
 # same way claude_code.py ignores mode/ai-title/attachment lines — not an error, just nothing to
 # extract.
 _PROMPT_EVENTS = frozenset({"gemini_cli.user_prompt"})
+_TOOL_CALL_EVENTS = frozenset({"gemini_cli.tool_call"})
 _CALL_EVENTS = frozenset({
     "gemini_cli.api_request",
     "gemini_cli.api_response",
@@ -138,10 +145,12 @@ def iter_records(text: str) -> Iterator[tuple[Optional[dict], bool]]:
 class GeminiCliAdapter(TranscriptAdapter):
     """`(telemetry text) -> [NormalizedEvent]`, defensively. See the module docstring."""
 
-    #: This runtime's self-report plane cannot currently express a tool call (see the module
-    #: docstring). Callers must consult this before applying parse-health's "tool_use craters"
-    #: check, which would otherwise read a structurally tool-free plane as broken extraction.
-    EMITS_TOOL_USE = False
+    #: This runtime's self-report plane CAN express a tool call (step 0b, DECISIONS.md G10), so
+    #: parse-health's "tool_use craters" check is meaningful here rather than a permanent false
+    #: alarm. Kept as an explicit flag because the answer was not obvious and cost two probes to
+    #: establish - a future runtime may well answer False, and the caller should ask rather than
+    #: assume every adapter can authorize.
+    EMITS_TOOL_USE = True
 
     def __init__(self) -> None:
         self._stats = ParseStats()
@@ -212,6 +221,36 @@ class GeminiCliAdapter(TranscriptAdapter):
                 # `text` stays empty by design — the prompt itself is in `_body`, which this
                 # adapter never reads. Length is metadata; content is not carried at all.
                 tool_input={"prompt_length": length} if isinstance(length, int) else {},
+                raw_kind=event_name,
+                source_file=source_file,
+                source_line=index,
+            )
+            return
+
+        if event_name in _TOOL_CALL_EVENTS:
+            # The authorizing event. Name and timestamp are all reconciler/orphan.py needs; the
+            # arguments are not in this plane at all (see the module docstring), so tool_input
+            # carries identity/provenance rather than a claimed command. It deliberately does not
+            # get a `command`-shaped key, so nothing downstream can mistake it for one.
+            name = attributes.get("function_name") or attributes.get("gen_ai.tool.name")
+            if not isinstance(name, str) or not name:
+                self._stats.record_skip("tool_call_without_name")
+                return
+            detail = {}
+            call_id = attributes.get("gen_ai.tool.call_id")
+            if isinstance(call_id, str) and call_id:
+                detail["call_id"] = call_id
+            tool_type = attributes.get("tool_type")
+            if isinstance(tool_type, str) and tool_type:
+                detail["tool_type"] = tool_type
+            self._stats.events_emitted += 1
+            yield NormalizedEvent(
+                ts=ts,
+                kind=TOOL_USE,
+                session_id=session_id,
+                uuid=prompt_id,
+                tool_name=name,
+                tool_input=detail,
                 raw_kind=event_name,
                 source_file=source_file,
                 source_line=index,

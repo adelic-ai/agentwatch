@@ -117,6 +117,43 @@
   }
 }{
   "hrTime": [
+    1785632023,
+    400000000
+  ],
+  "hrTimeObserved": [
+    1785632023,
+    400000000
+  ],
+  "resource": {
+    "_rawAttributes": [],
+    "_asyncAttributesPending": false
+  },
+  "instrumentationScope": {
+    "name": "gemini-cli"
+  },
+  "attributes": {
+    "session.id": "00000000-0000-4000-8000-000000000001",
+    "event.name": "gemini_cli.tool_call",
+    "event.timestamp": "2026-08-01T20:53:43.400Z",
+    "prompt_id": "synthetic-prompt-0001",
+    "function_name": "synthetic_list_directory",
+    "gen_ai.tool.name": "synthetic_list_directory",
+    "gen_ai.tool.call_id": "synthetic-call-0001",
+    "gen_ai.tool.description": "SYNTHETIC tool description",
+    "tool_type": "native",
+    "duration_ms": 12.5,
+    "success": true
+  },
+  "_body": "SYNTHETIC BODY - tool call",
+  "_attributesCount": 11,
+  "_droppedAttributesCount": 0,
+  "_isReadonly": false,
+  "_logRecordLimits": {
+    "attributeCountLimit": 128,
+    "attributeValueLengthLimit": null
+  }
+}{
+  "hrTime": [
     1785632036,
     988000000
   ],

@@ -375,3 +375,75 @@ Cause is not yet established — a sampling-window artifact and something struct
 consistent with the evidence. `scripts/01-probe-tool-call-shape.sh` §6 counts runtime execs across
 the entire audit key rather than one window, which distinguishes them. Reported rather than worked
 around.
+
+## G10: §1 SETTLED — tool calls are recorded, but **name-only**
+
+Step 0b ran a benign prompt that required a tool ("list this directory, reply with the count").
+Exit 0, the model answered `3`, telemetry grew 199,546 → 467,950 bytes. New record kinds appeared:
+
+```
+1  gemini_cli.tool_call        (LogRecord)
+1  tool_call                   (span)
+1  schedule_tool_calls         (span)
+```
+
+with `attributes.function_name`, `gen_ai.tool.name`, `gen_ai.tool.call_id`, `gen_ai.tool.description`,
+`tool_type`. **The self-report plane is strong enough to authorize.** `EMITS_TOOL_USE` is now True
+and the adapter emits `TOOL_USE`.
+
+**But there is no arguments field.** No `function_args`-shaped key path exists in any record. The
+plane says *which* tool ran, never *what it ran on*. The distinction is not academic:
+
+- **Authorization is unaffected.** `reconciler/orphan.py` authorizes on the tool_use *timestamp*
+  alone — `_authorizing_tool_use` compares only `tu.ts` and never reads the name or input. A
+  name-and-timestamp tool_use authorizes exactly as well as a fully-detailed one, so the core
+  reconciliation in §5 works at full fidelity.
+- **`claimed_action` as §3 defines it — "the command/path the agent says it ran" — does not
+  exist on this runtime.** Any future detector that wants to compare claimed *commands* against
+  actual ones cannot be built on Gemini's telemetry. The arguments are plausibly inside `_body`,
+  which is prompt-bearing and deliberately unread; recovering them means reading the field this
+  adapter exists not to read.
+
+`test_tool_use_carries_no_command_claim` pins the absence, because the tempting future change is to
+synthesize a command-ish string into `tool_input` so something downstream can diff it. There is no
+source for such a string — anything put there would be invented.
+
+## G11: the ground-truth plane is not recording — steps 3 and 4 are BLOCKED
+
+Step 0b's audit capture over the tool-using run: **`SYSCALL lines seen: 0`**. And across the entire
+audit key, not just that window: `comm=node` 0, `comm=gemini` 0, `comm=timeout` 0, `comm=npm` 0.
+
+The run demonstrably happened — exit 0, the model answered, the telemetry file more than doubled.
+So this is not "the agent did nothing". **auditd is recording nothing for this container.**
+
+This blocks rather than slows the remaining work. agentwatch reconciles self-report against ground
+truth; with no ground truth, §4 has no exec population to build a runtime allowlist from, and the
+CONFIRMED-on-benign count — the Gemini analog of the Claude 83→0 result — **cannot be measured at
+all.** It is not a number I can estimate or defer; there is no input to it.
+
+### Leading hypothesis: the snapshot restore reallocated the idmap
+
+The Capsule's audit rule hardcodes the range measured at build time (`uid>=1065536 uid<1131072`).
+Capsule batch 9 then restored the container from the `clean` snapshot — and that restore is
+*precisely* the operation that must rewrite `volatile.idmap.next`. It is why a bare
+`incus snapshot restore` failed with "Changing volatile.idmap.next … is forbidden", and why
+`restore-clean.sh` exists at all. If the restore handed the container a different idmap base, the
+rule now filters on a uid range nothing runs in — and records nothing while `auditctl -l` continues
+to look perfectly correct.
+
+If that is confirmed, it is a Capsule finding more than an agentwatch one: **exercising I6
+(reversibility) silently destroyed I5 (ground truth)**, and the Capsule's I5 acceptance test passed
+*before* the restore, so nothing caught it. It is also the third instance of that build's
+characteristic failure shape — a thing that looks right in `auditctl -l` while being inverted,
+after `volatile.idmap.base` reporting `"0"` and the shared-idmap discovery.
+
+`scripts/02-diagnose-audit-plane.sh` tests the hypothesis directly (live idmap vs rule range),
+tests capture end-to-end with a marker exec rather than by inference, and regenerates the rule
+**only if** the mismatch is confirmed. If the ranges agree and capture is still dead, that is a
+different and more interesting failure, and the script deliberately changes nothing.
+
+### Consequence for the Capsule, if confirmed
+
+Two fixes belong in `~/dev/gemini-capsule`: §3.9's rule should be derived at load time rather than
+frozen at build time, and `restore-clean.sh` should re-derive it — restoring is exactly the moment
+it breaks, so the recovery tool is the right place to repair it.

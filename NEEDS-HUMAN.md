@@ -76,3 +76,46 @@ container pristine afterwards, `bash ~/dev/gemini-capsule/scripts/restore-clean.
    `comm="gemini"` are zero across the entire key, `RuntimeScope` cannot identify runtime pids,
    scoping fails open, and the Gemini path inherits exactly the false-positive failure the v2
    refactor exists to fix. That is a finding to report, not to route around.
+
+---
+
+## G-NH2 — RESOLVED (2026-08-01) — step 0b
+
+**§1 settled:** `gemini_cli.tool_call` exists; the plane can authorize (`EMITS_TOOL_USE = True`).
+It carries the tool *name* but no arguments — see DECISIONS G10 for why that distinction matters.
+
+**Second finding:** the audit plane recorded nothing for the run. See G-NH3.
+
+---
+
+## G-NH3 — OPEN, BLOCKING — the ground-truth plane is not recording
+
+```
+bash scripts/02-diagnose-audit-plane.sh 2>&1 | tee /tmp/audit-diagnose.log
+```
+
+**What happened:** a real tool-using Gemini run produced **zero** audit records, and `node`/`gemini`/
+`timeout`/`npm` are zero across the entire `capsule` audit key. The run definitely happened (exit 0,
+model answered, telemetry doubled in size).
+
+**Why this blocks the deliverable:** the CONFIRMED-on-benign count you asked for — the Gemini analog
+of 83→0 — is a reconciliation of self-report against ground truth. There is currently no ground
+truth, so the number has no input. Steps 3 (runtime allowlist) and 4 (reconcile + measure) are
+blocked, not merely slower. The adapter itself (steps 1–2) is done and tested.
+
+**Leading hypothesis:** the Capsule's audit rule hardcodes `uid>=1065536 uid<1131072`, and batch 9's
+snapshot restore is exactly the operation that rewrites `volatile.idmap.next`. If the restore
+reallocated the idmap, the rule now filters on a range nothing runs in — recording nothing while
+`auditctl -l` still looks correct. **That would mean exercising I6 silently destroyed I5**, with the
+Capsule's own I5 test having passed before the restore and so never seeing it.
+
+**What the script does:** compares the live idmap against the rule's range, checks auditd health,
+tests capture end-to-end with a marker exec, and regenerates the rule **only if** the mismatch is
+confirmed. It backs up the existing rule first. If the ranges agree and capture is still dead, it
+changes nothing and says so — that would be a different failure worth understanding before touching
+anything.
+
+**It edits a host audit rule** (only in the confirmed-mismatch case). That is a Capsule-side repair
+of a currently-broken invariant rather than a new capability, but it is your box and your call —
+and if it fires, it needs recording in `~/dev/gemini-capsule/DECISIONS.md`, because §3.9 and
+`restore-clean.sh` both need to know a restore invalidates the rule.
