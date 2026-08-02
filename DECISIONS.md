@@ -344,3 +344,34 @@ is deferred to step 4, when there is a reconcile path to test it against; record
 interaction is not rediscovered as a bug. Note the fail-safe direction is currently *safe* — a
 permanently-degraded plane downgrades CONFIRMED to NONE, i.e. under-alerts — so this is a fidelity
 problem, not a security one.
+
+## G9: the audit capture contains no agent-runtime execs — §4 is not yet groundable
+
+The step-0 inventory over `ausearch -k capsule -ts today`: 586 SYSCALL lines, 432 at uid 1065536
+(container root) and 129 at uid 1066536 (the `agent` user). The vocabulary is almost entirely
+container-boot noise — `incusd` (123), `basename` (71), `bash` (29), `id` (29), `gpg-agent` (21),
+`systemd-*` generators, `mount`, `lxc.mount.hook` — plus login-shell churn from `su - agent` and 15
+`curl` execs from the Capsule build's own egress tests.
+
+**There is no `node`, no `gemini`, and no `timeout` exec anywhere in it.** The Capsule ran Gemini
+twice on the day this capture covers (batches 10 and 11, ~20:39 and ~20:53), and the runtime's own
+process appears in neither.
+
+§4 asks for a Gemini runtime-internal allowlist built "from the real auditd capture, not from
+assumption". That capture currently contains no Gemini runtime activity to build from, so the
+allowlist would be assumption wearing evidence's clothes. Not written.
+
+**This matters well beyond §4.** `RuntimeScope` identifies the runtime by matching exec records; no
+runtime exec means `runtime_pids` is empty, `active` is False, and scoping **fails open** — every
+agent-uid exec gets evaluated. That is precisely v1's behavior and the direct cause of the original
+83 false positives. The Gemini path would inherit the failure the v2 refactor exists to fix.
+
+It also narrows what the Capsule build concluded about I5. That build proved auditd captures execs
+made *by* the agent (the `/bin/echo` marker at uid 1066536, recorded with `key="capsule"`). It did
+not prove auditd captures the exec *of* the agent runtime, and this inventory is evidence it may
+not. Those are different claims and the build's write-up treats them as one.
+
+Cause is not yet established — a sampling-window artifact and something structural are both
+consistent with the evidence. `scripts/01-probe-tool-call-shape.sh` §6 counts runtime execs across
+the entire audit key rather than one window, which distinguishes them. Reported rather than worked
+around.
