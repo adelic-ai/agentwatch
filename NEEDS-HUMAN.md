@@ -161,6 +161,42 @@ Recorded because each is a real bound on the result, and none is visible from th
    the Capsule's suite still checks I5 only before it restores. Capsule-side, low priority, noted
    in D12.
 
+---
+
+## G-NH6 — OPEN — run the shell-out capture (`scripts/04-capture-shellout-and-measure.sh`)
+
+**Real terminal** (sudo needs a TTY):
+
+```
+bash scripts/04-capture-shellout-and-measure.sh 2>&1 | tee /tmp/gemini-measure-shell.log
+```
+
+Then say it is done; the capture is read from `/tmp/gemini-capture-shell/` directly.
+
+**What it answers:** G-NH5 item 1 — the correlation path, the *recall* half of the detector. 03's
+run reached CONFIRMED = 0 with `matched` = 0, because `list_directory` never execs. This run forces
+`run_shell_command`, so a real `node -> shell -> command` chain lands on the audit plane while a
+`tool_call` sits on the other one. **The metric is `matched > 0`.** CONFIRMED should stay 0.
+
+**One thing in it widens permission, and you should decide rather than discover:** a shell tool
+call needs confirmation, and a non-interactive `-p` run has nobody to ask, so the script
+auto-approves (`--approval-mode yolo`, or `--yolo` on older CLIs — it probes `--help` rather than
+assuming). Inside the throwaway capsule, on three files the script creates seconds earlier, asking
+for a line count. Drop the flag if you would rather not; you then get a capture of the refusal
+path, which answers a much weaker question.
+
+**What it changes:** nothing outside `/home/agent/shell-ws` in the container, which it removes. No
+config/network/package/audit-rule changes. One Gemini API call.
+
+**A prediction is recorded in the script header before running it**, because the answer is not
+obviously yes: `gemini_cli.tool_call` is stamped at *completion* (measured on the 03 capture — the
+record lands ~14ms after the api_response that requested it, carrying `duration_ms` 8-9ms), while
+`reconciler/orphan.py` authorizes *forward* from the record. If the shell chain execs during the
+call, its timestamp precedes the record and no forward window can match it. Either outcome is a
+result; the point of writing it down first is that it cannot become a story assembled afterwards.
+
+---
+
 **Not attempted:** step 5's network plane (squid `access.log` as a second ground-truth source).
 Explicitly out of scope for v1, and now the most valuable remaining work — for a runtime whose
 self-report plane cannot describe *what* a tool did, egress records carry proportionally more.
