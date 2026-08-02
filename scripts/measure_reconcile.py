@@ -74,12 +74,93 @@ def summarize(rows):
     return counts
 
 
+def _nearest_tool_use(exec_ts, tool_uses):
+    """The tool_call closest in time to an exec, and the SIGNED gap `exec_ts - tu.ts`.
+
+    The sign is the whole point. `reconcile_orphans` authorizes forward only - an exec matches a
+    tool_call if it lands in `[tu.ts, tu.ts + window]` - so a *negative* gap means the exec
+    happened BEFORE the tool_call that plausibly caused it was written to the plane, and no window
+    widening in the forward direction can ever match it. That is an ordering finding about the
+    runtime's telemetry, not a tuning parameter, and it is invisible in a bare orphan count.
+    """
+    if not tool_uses:
+        return None, None
+    best = min(tool_uses, key=lambda tu: abs(exec_ts - tu.ts))
+    return best, exec_ts - best.ts
+
+
+def _covered_by_call_interval(exec_ts, tu):
+    """Is `exec_ts` inside `[tu.ts - duration_ms, tu.ts]` - the interval the tool actually ran in?
+
+    `gemini_cli.tool_call` is stamped at COMPLETION and carries `duration_ms` (see the adapter), so
+    this - not the forward window - is the interval in which a process the tool spawned must have
+    exec'd. Reported as evidence about what a *correct* window would have to be; nothing in the
+    reconciler uses it yet.
+    """
+    duration = (tu.tool_input or {}).get("duration_ms")
+    if not isinstance(duration, (int, float)):
+        return None
+    return tu.ts - (float(duration) / 1000.0) <= exec_ts <= tu.ts
+
+
+def report_correlation(rows, tool_uses, t0):
+    """The recall half: which execs a tool_call authorized, and for the rest, how near it came.
+
+    `reconcile_orphans` reports only a boolean per exec. That is enough to count CONFIRMED but not
+    to say anything about *why* the matching half did or did not fire, which is the question this
+    capture exists to answer. comm/exe/pid/tool-name/timing only - never argv.
+    """
+    print("\n=== CORRELATION — the recall half (does a tool_call authorize a real exec?) ===")
+    print(f"tool_calls on the self-report plane: {len(tool_uses)}")
+    for tu in sorted(tool_uses, key=lambda e: e.ts):
+        detail = tu.tool_input or {}
+        duration = detail.get("duration_ms")
+        span = f"  duration_ms={duration}" if duration is not None else ""
+        print(f"  {tu.ts - t0:+9.3f}s  {tu.tool_name}{span}  (record is END-stamped)")
+
+    matched = [c for c, _, _ in rows if not c.is_orphan]
+    print(f"\nMATCHED (a tool_call authorized this exec): {len(matched)}")
+    for c in matched:
+        ev = c.event
+        tu = c.matched_tool_use
+        gap = ev.ts - tu.ts if tu else None
+        inside = _covered_by_call_interval(ev.ts, tu) if tu else None
+        note = {True: "inside the call's own interval", False: "AFTER the call completed",
+                None: "call has no duration_ms"}[inside]
+        print(f"  pid={ev.pid:<8} comm={ev.comm or '?':<14} via={tu.tool_name if tu else '?':<20} "
+              f"gap={gap:+.3f}s  attached_at_pid={c.matched_pid}  [{note}]")
+
+    unmatched = [(c, v) for c, v, _ in rows if c.is_orphan]
+    if unmatched:
+        print(f"\nUNMATCHED in-scope execs: {len(unmatched)} — nearest tool_call, SIGNED gap")
+        print("  (gap < 0 => the exec PRECEDED the tool_call record; a forward-only window can")
+        print("   never match it, however wide. See _nearest_tool_use.)")
+        for c, verdict in sorted(unmatched, key=lambda r: r[0].event.ts):
+            ev = c.event
+            tu, gap = _nearest_tool_use(ev.ts, tool_uses)
+            gap_text = f"{gap:+.3f}s to {tu.tool_name}" if tu else "no tool_call at all"
+            inside = _covered_by_call_interval(ev.ts, tu) if tu else None
+            flag = "  <- INSIDE that call's interval" if inside else ""
+            print(f"  {ev.ts - t0:+9.3f}s  pid={ev.pid:<8} comm={ev.comm or '?':<14} "
+                  f"{str(verdict):<10} nearest: {gap_text}{flag}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--audit", required=True)
     ap.add_argument("--telemetry", required=True)
     ap.add_argument("--agent-uid", type=int, required=True)
     ap.add_argument("--window", type=float, default=DEFAULT_WINDOW_SECONDS)
+    ap.add_argument(
+        "--since",
+        type=float,
+        default=None,
+        help="epoch seconds; drop telemetry events older than this. The telemetry file is "
+             "APPEND-ONLY across runs, so without this a capture carries every previous "
+             "session's tool_calls while the audit side is already windowed by `ausearch -ts`. "
+             "Windowing both planes to the same run makes 'a tool_call authorized this exec' a "
+             "statement about THIS run. It can only ever remove authorizers, never add them.",
+    )
     args = ap.parse_args()
 
     with open(args.audit, encoding="utf-8", errors="replace") as fh:
@@ -87,6 +168,12 @@ def main() -> int:
     adapter = GeminiCliAdapter()
     transcript_events = list(adapter.parse_file(Path(args.telemetry)))
     tstats = adapter.stats
+
+    if args.since is not None:
+        kept = [e for e in transcript_events if e.ts >= args.since]
+        print(f"--since {args.since:.0f}: telemetry events {len(transcript_events)} -> {len(kept)} "
+              f"(dropped {len(transcript_events) - len(kept)} from earlier sessions)")
+        transcript_events = kept
 
     execs = [e for e in gt_events if e.kind == EXEC]
     agent_execs = [e for e in execs if e.uid == args.agent_uid]
@@ -168,6 +255,8 @@ def main() -> int:
           f"scope active: {tuned_scope.active}")
     for key, count in sorted(summarize(tuned_rows).items()):
         print(f"  {key:<12} {count}")
+
+    report_correlation(tuned_rows, tool_uses, min(e.ts for e in agent_execs))
 
     all_confirmed = [(c, r) for c, v, r in tuned_rows if v == Verdict.CONFIRMED]
     # A failed execve ran nothing. A PATH search records one ENOENT attempt per directory tried

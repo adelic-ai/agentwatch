@@ -35,8 +35,11 @@ finding can leak it.
 
 TOOL CALLS: PRESENT, BUT NAME-ONLY (§1, settled by step 0b — DECISIONS.md G10):
 A run that actually uses a tool emits `attributes["event.name"] == "gemini_cli.tool_call"`,
-carrying `function_name`, `gen_ai.tool.name`, `gen_ai.tool.call_id` and `tool_type`. So the plane
-is strong enough to authorize: `EMITS_TOOL_USE` is True.
+carrying `function_name`, `gen_ai.tool.name`, `gen_ai.tool.call_id`, `tool_type`, `duration_ms`
+and `success`. So the plane is strong enough to authorize: `EMITS_TOOL_USE` is True.
+
+The record is stamped at the **end** of the call (see `duration_ms` below), which is load-bearing
+for correlation and is why that field is carried into `tool_input`.
 
 What it does **not** carry is the arguments. There is no `function_args`-shaped key path in any
 record — the plane says *which tool* ran, never *what it ran on*. Two consequences, and the
@@ -258,6 +261,21 @@ class GeminiCliAdapter(TranscriptAdapter):
             tool_type = attributes.get("tool_type")
             if isinstance(tool_type, str) and tool_type:
                 detail["tool_type"] = tool_type
+            # `duration_ms` is carried because THE RECORD IS STAMPED AT COMPLETION, not at the
+            # start of the call: in every real capture the tool_call record lands ~14ms after the
+            # api_response that requested it, with a duration of 8-9ms in between. So `ts` is the
+            # END of the tool's execution, and the interval in which anything the tool spawned
+            # actually ran is [ts - duration_ms/1000, ts] - entirely BEFORE `ts`.
+            #
+            # That matters to the reconciler, whose window is forward-only ([tu.ts, tu.ts+window]),
+            # and it is not recoverable from any other field. A non-prompt-bearing float, same
+            # class as the token counts below.
+            duration = attributes.get("duration_ms")
+            if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+                detail["duration_ms"] = float(duration)
+            success = attributes.get("success")
+            if isinstance(success, bool):
+                detail["success"] = success
             self._stats.events_emitted += 1
             yield NormalizedEvent(
                 ts=ts,

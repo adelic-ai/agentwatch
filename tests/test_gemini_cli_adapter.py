@@ -67,6 +67,16 @@ class GeminiCliAdapterTest(unittest.TestCase):
         self.assertEqual(tool_uses[0].tool_input.get("call_id"), "synthetic-call-0001")
         self.assertTrue(GeminiCliAdapter.EMITS_TOOL_USE)
 
+    def test_tool_use_carries_the_call_duration(self):
+        """`duration_ms` is load-bearing, not decoration: the tool_call record is stamped at the
+        END of the call, so `[ts - duration_ms, ts]` is the only interval in which a process the
+        call spawned can have exec'd. Nothing else in the plane reconstructs it.
+        """
+        events, _ = _events()
+        tool_use = next(e for e in events if e.kind == TOOL_USE)
+        self.assertEqual(tool_use.tool_input.get("duration_ms"), 12.5)
+        self.assertIs(tool_use.tool_input.get("success"), True)
+
     def test_tool_use_carries_no_command_claim(self):
         """The plane says WHICH tool ran, never WHAT it ran on — there is no arguments field.
 
