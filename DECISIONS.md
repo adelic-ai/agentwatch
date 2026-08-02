@@ -447,3 +447,101 @@ different and more interesting failure, and the script deliberately changes noth
 Two fixes belong in `~/dev/gemini-capsule`: §3.9's rule should be derived at load time rather than
 frozen at build time, and `restore-clean.sh` should re-derive it — restoring is exactly the moment
 it breaks, so the recovery tool is the right place to repair it.
+
+## G12: CONFIRMED — the snapshot restore silently blinded the ground-truth plane
+
+`scripts/02-diagnose-audit-plane.sh` confirmed G11's hypothesis exactly:
+
+```
+idmap base at build time (frozen into the rule) : 1065536
+idmap base after the batch-9 snapshot restore   : 1131072
+marker test with the frozen rule  : before 0, after 0   <- blind
+rule re-derived to [1131072, 1196608)
+marker test after re-derivation   : before 2, after 9   <- recording again
+```
+
+**Exercising I6 (reversibility) silently destroyed I5 (ground truth).** The restore reallocated the
+container's idmap; the audit rule filtered a uid range nothing ran in any more; auditd recorded
+nothing while `auditctl -l` kept displaying a correct-looking rule.
+
+Nothing caught it because **the Capsule's I5 acceptance test passed before the restore.** Test 4
+(auditd sees a container exec) ran in batch 5/7; test 5 (snapshot/restore) ran later, in batch 9.
+The test that would have detected the breakage ran *before* the operation that caused it — the
+ordering made the suite blind to an interaction between two invariants it verified individually.
+
+This is the third instance of that build's signature failure shape: something that looks right in
+`auditctl -l` while being wrong underneath, after `volatile.idmap.base` reporting `"0"` and the
+shared-idmap discovery. All three share a root: **a value read once at build time and then frozen,
+about a container whose identity can change under it.**
+
+### Flagged for the Capsule (`~/dev/gemini-capsule`) — follow-up, not done here
+
+1. **§3.9's rule should derive its range at load time**, not freeze it at build time.
+2. **`restore-clean.sh` should re-derive the rule after restoring** — restoring is precisely the
+   moment it breaks, so the recovery tool is the natural place to repair it.
+3. **§3.10's ordering is itself a finding.** Verifying I5 and I6 independently, in that order, cannot
+   catch "I6 breaks I5". A re-verification of I5 *after* test 5 would have caught this immediately.
+
+Recorded here because agentwatch found it; the fixes belong in that repo.
+
+### Live values after the fix
+
+```
+container uid range : [1131072, 1196608)
+container root      : 1131072
+agent user          : 1132072   (base + 1000)
+```
+
+The agent-user uid is what `reconcile_orphans(agent_uid=...)` must be given — the Gemini CLI runs
+as `agent`, not as container root.
+
+## G13: `is_runtime_exec`'s argv marker is now a parameter, not a hardcoded `"claude"`
+
+`is_runtime_exec` identified a node process as the runtime with `"claude" in argv`, hardcoded. Both
+runtimes are npm-installed node CLIs identified exactly the same way — only the marker string
+differs — so the marker became a parameter (`runtime_argv_markers`, defaulting to `{"claude"}`).
+Claude's behavior is unchanged; `GEMINI_RUNTIME_ARGV_MARKERS = {"gemini"}` is passed for Gemini.
+
+Tested in both directions, because a parameter that Claude's default would have matched anyway
+would be decorative: Gemini's argv must NOT be matched by the Claude default, and must be matched by
+its own.
+
+This is the change the existing decision "RUNTIME_EXE_PREFIXES lives in the reconciler as swappable
+config, not adapter logic" anticipated — that entry claimed a future Gemini adapter "would pair with
+a different prefix set passed at the CLI/Config layer; nothing in reconciler/ or detectors/ would
+need to change." Almost true. The prefix set was indeed swappable; the argv marker sitting three
+lines below it was not, and the claim did not survive contact with the second runtime. One-line fix,
+worth recording because the original entry reads as more validated than it was.
+
+## G14: `GEMINI_*` scope values are PROVISIONAL — and labeled as such in the source
+
+The Claude sets were diagnosed from 83 real false positives. The Gemini sets have no equivalent
+evidence yet: the ground-truth plane was blind until G12, so there has never been a real Gemini exec
+population to tune against. What is in `runtime_scope.py` now is reasoned, not measured:
+
+- `node`, `npm`, `env` — the exec-chain hops for an npm-installed node CLI, the same shape as
+  Claude's;
+- `rg` — Gemini CLI emits a `gemini_cli.ripgrep_fallback` event and the step-0b run printed
+  "Ripgrep is not available. Falling back to GrepTool", so it attempts ripgrep as runtime behavior
+  that no tool_call authorizes.
+
+`scripts/measure_reconcile.py` reports **baseline (untuned) and tuned counts side by side** and
+prints the comm/exe of every CONFIRMED candidate, so these get finalized from the capture. A tuned
+number alone proves nothing — and if baseline equals tuned, the allowlist earned nothing and should
+be deleted rather than kept for appearances. That check is in the script's own output, not left to
+whoever reads it.
+
+## G15: the capture must use `ausearch -i`, and that is load-bearing
+
+`groundtruth/audit_log.py` decides an event is an exec via `fields.get("SYSCALL") == "execve"` —
+the **translated** field, which only `ausearch -i` emits. Raw `ausearch` output carries
+`syscall=59`, and the parser then yields **zero** exec events without erroring.
+
+That is the same silent-under-extraction failure `parse_health.py` exists to catch, one layer down
+and unguarded: a capture taken without `-i` would produce a reconciliation over an empty
+ground-truth plane, and every self-report event would look unremarkable because there is nothing to
+contradict it. The result would be a clean, confident, meaningless zero.
+
+`scripts/03-capture-and-measure.sh` uses `-i` and says why at the call site;
+`measure_reconcile.py` fails loudly on an empty agent-uid exec set rather than reporting a zero it
+cannot justify.

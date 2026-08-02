@@ -41,6 +41,11 @@ DEFAULT_RUNTIME_EXE_PREFIXES: frozenset[str] = frozenset({
     "/usr/lib/node_modules/@anthropic-ai/claude-code/",
 })
 
+# argv markers that identify a `node` process as *being* the runtime rather than something the
+# runtime spawned. Parameterized rather than hardcoded because the check is identical across
+# node-based CLIs and only the marker differs - see GEMINI_* below and DECISIONS.md G13.
+DEFAULT_RUNTIME_ARGV_MARKERS: frozenset[str] = frozenset({"claude"})
+
 # Binaries Claude Code is known to exec *directly* (no intervening shell) for its own operation,
 # never as a delegated tool call - diagnosed from the real 83 false positives: `git` (status/log/
 # remote/config, gathering repo context), `rg` (ripgrep, file search/indexing), and the npm
@@ -69,11 +74,14 @@ def is_runtime_exec(
     comm: Optional[str],
     args: tuple,
     runtime_exe_prefixes: frozenset[str] = DEFAULT_RUNTIME_EXE_PREFIXES,
+    runtime_argv_markers: frozenset[str] = DEFAULT_RUNTIME_ARGV_MARKERS,
 ) -> bool:
     """Does this exec event's *own* process belong to the agent runtime itself?"""
     if exe and any(exe.startswith(prefix) for prefix in runtime_exe_prefixes):
         return True
-    if comm == "node" and any("claude" in a for a in args if isinstance(a, str)):
+    if comm == "node" and any(
+        marker in a for a in args if isinstance(a, str) for marker in runtime_argv_markers
+    ):
         return True
     return False
 
@@ -94,6 +102,7 @@ class RuntimeScope:
         runtime_exe_prefixes: frozenset[str] = DEFAULT_RUNTIME_EXE_PREFIXES,
         runtime_internal_names: frozenset[str] = DEFAULT_RUNTIME_INTERNAL_NAMES,
         posix_shells: frozenset[str] = DEFAULT_POSIX_SHELLS,
+        runtime_argv_markers: frozenset[str] = DEFAULT_RUNTIME_ARGV_MARKERS,
     ) -> None:
         self._tree = tree
         self._runtime_internal_names = runtime_internal_names
@@ -107,7 +116,9 @@ class RuntimeScope:
                 continue
             self._exe_by_pid[ev.pid] = ev.exe
             self._comm_by_pid[ev.pid] = ev.comm
-            if ev.uid == agent_uid and is_runtime_exec(ev.exe, ev.comm, ev.args, runtime_exe_prefixes):
+            if ev.uid == agent_uid and is_runtime_exec(
+                ev.exe, ev.comm, ev.args, runtime_exe_prefixes, runtime_argv_markers
+            ):
                 runtime_pids.add(ev.pid)
 
         self.runtime_pids: frozenset[int] = frozenset(runtime_pids)
@@ -159,3 +170,28 @@ class RuntimeScope:
             )
 
         return Verdict.CONFIRMED, "no ancestor tool_use, and not explainable as runtime activity"
+
+
+# --- Gemini CLI tuning (design doc v2 §6's "a future Gemini adapter would pair with a different
+# set here, passed in rather than hardcoded elsewhere" - this is that set) --------------------
+#
+# PROVISIONAL until measured against a real capture. The Claude sets above were diagnosed from 83
+# real false positives; these have no equivalent evidence yet, because the ground-truth plane was
+# blind until DECISIONS.md G12 was fixed. `scripts/measure_reconcile.py` prints the comm/exe of
+# every CONFIRMED candidate precisely so these can be finalized from data rather than from the
+# plausible-sounding guess this currently is. Do not treat them as validated.
+
+GEMINI_RUNTIME_EXE_PREFIXES: frozenset[str] = frozenset({
+    "/usr/lib/node_modules/@google/gemini-cli/",
+    "/usr/local/lib/node_modules/@google/gemini-cli/",
+})
+
+# `gemini` in a node process's argv means that node process IS the CLI - the direct analog of the
+# `claude` marker, and the reason is_runtime_exec takes the marker as a parameter.
+GEMINI_RUNTIME_ARGV_MARKERS: frozenset[str] = frozenset({"gemini"})
+
+# The runtime's own exec chain for an npm-installed node CLI: `env` and `node` are the hops, `npm`
+# is the self-update/version check. `rg` is here because Gemini CLI logs a `gemini_cli.ripgrep_
+# fallback` event and attempts ripgrep before falling back to its in-process GrepTool - so an `rg`
+# exec is runtime behavior no tool_call authorizes, the same shape as Claude's ripgrep searches.
+GEMINI_RUNTIME_INTERNAL_NAMES: frozenset[str] = frozenset({"node", "npm", "env", "rg"})

@@ -1,6 +1,7 @@
 import unittest
 
 from agentwatch.events import EXEC, GroundTruthEvent
+from agentwatch.reconciler import runtime_scope
 from agentwatch.reconciler.process_tree import ProcessTree
 from agentwatch.reconciler.runtime_scope import RuntimeScope, is_runtime_exec
 from agentwatch.reconciler.verdict import Verdict
@@ -149,3 +150,43 @@ class ClassifyUnmatchedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeminiRuntimeMarkerTest(unittest.TestCase):
+    """`is_runtime_exec`'s argv marker is parameterized (DECISIONS.md G13).
+
+    The check was `"claude" in argv` hardcoded. Both runtimes are node CLIs identified the same
+    way and only the marker differs, so the marker is now an argument. Claude's default must not
+    change, and Gemini must not be identifiable by Claude's default - if it were, the parameter
+    would be decorative.
+    """
+
+    def test_claude_default_unchanged(self):
+        self.assertTrue(
+            runtime_scope.is_runtime_exec(None, "node", ("node", "/x/claude.exe", "--y"))
+        )
+
+    def test_gemini_not_matched_by_claude_default(self):
+        self.assertFalse(
+            runtime_scope.is_runtime_exec(None, "node", ("node", "/x/gemini.js", "--y"))
+        )
+
+    def test_gemini_matched_by_its_own_marker(self):
+        self.assertTrue(
+            runtime_scope.is_runtime_exec(
+                None,
+                "node",
+                ("node", "/x/gemini.js", "--y"),
+                runtime_argv_markers=runtime_scope.GEMINI_RUNTIME_ARGV_MARKERS,
+            )
+        )
+
+    def test_gemini_exe_prefix_matches(self):
+        self.assertTrue(
+            runtime_scope.is_runtime_exec(
+                "/usr/lib/node_modules/@google/gemini-cli/dist/index.js",
+                "node",
+                (),
+                runtime_exe_prefixes=runtime_scope.GEMINI_RUNTIME_EXE_PREFIXES,
+            )
+        )
