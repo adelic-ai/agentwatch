@@ -30,6 +30,7 @@ from agentwatch.findings import (
     lan_reach_finding,
     orphan_finding,
     parse_health_finding,
+    unevaluable_finding,
     self_mod_finding,
 )
 from agentwatch.groundtruth import audit_log, journald
@@ -114,6 +115,7 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
     if health.degraded:
         findings.append(parse_health_finding(health, ts=now))
 
+    unevaluable = []
     for candidate in reconcile_orphans_scoped(
         ground_truth_events,
         transcript_events,
@@ -123,6 +125,13 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
     ):
         if candidate.verdict == Verdict.CONFIRMED:
             findings.append(orphan_finding(candidate))
+        elif candidate.verdict == Verdict.UNEVALUABLE:
+            unevaluable.append(candidate)
+    # Reported once per run, not per exec (see findings.unevaluable_finding). Without this the
+    # product path repeats the failure the category was added to fix: a run with zero CONFIRMED
+    # findings looks like a run that examined everything, and here it did not.
+    if unevaluable:
+        findings.append(unevaluable_finding(unevaluable, ts=now))
 
     for candidate in reconcile_divergence(transcript_events):
         if candidate.is_divergent:

@@ -6,6 +6,11 @@ import unittest
 
 from agentwatch.events import EXEC, GroundTruthEvent, NormalizedEvent, TOOL_USE
 from agentwatch.reconciler.orphan import reconcile_orphans_scoped
+from agentwatch.findings import (
+    DETECTOR_ORPHAN_SYSCALL,
+    DETECTOR_UNEVALUABLE,
+    unevaluable_finding,
+)
 from agentwatch.reconciler.verdict import Verdict
 
 AGENT_UID = 1000
@@ -109,6 +114,80 @@ class ReconcileOrphansScopedTest(unittest.TestCase):
         r = by_pid(results)[500]
         self.assertTrue(r.is_orphan)
         self.assertEqual(r.verdict, Verdict.CONFIRMED)
+
+
+class UnevaluableExecTest(unittest.TestCase):
+    """DECISIONS.md G24 / NEEDS-HUMAN G-NH7: an exec the reconciler cannot place must be REPORTED
+    as unevaluable, never silently dropped and never turned into a verdict it did not earn.
+
+    The real case: the audit rule records `execve` only, so a shell that forks a subshell before
+    exec'ing the command leaves the command's `ppid` pointing at a pid with no record anywhere.
+    Ancestry dead-ends, scoping says out-of-scope, and the command the agent actually ran vanishes
+    from the output entirely (measured on a real capture: `wc`, DECISIONS.md G23).
+    """
+
+    def _fork_gap_events(self):
+        # pid 99 is the forked subshell: it exists only as a ppid, never as an exec record.
+        return [
+            gt(pid=1, ppid=0, uid=AGENT_UID, exe=RUNTIME_EXE, comm="claude", ts=1000.0),
+            gt(pid=2, ppid=1, uid=AGENT_UID, exe="/bin/bash", comm="bash", ts=1005.0),
+            gt(pid=100, ppid=99, uid=AGENT_UID, exe="/usr/bin/wc", comm="wc", ts=1005.1),
+        ]
+
+    def test_broken_ancestry_exec_is_reported_as_unevaluable(self):
+        results = reconcile_orphans_scoped(
+            self._fork_gap_events(), [], agent_uid=AGENT_UID, window_seconds=WINDOW
+        )
+        self.assertIn(100, by_pid(results), "the exec must not be silently dropped")
+        self.assertEqual(by_pid(results)[100].verdict, Verdict.UNEVALUABLE)
+
+    def test_unevaluable_is_never_a_confirmed_finding(self):
+        """The other half of the requirement. Reporting the gap must not manufacture an alert:
+        `wc` was not examined, so calling it an unexplained orphan would be a false positive
+        dressed up as honesty."""
+        results = reconcile_orphans_scoped(
+            self._fork_gap_events(), [], agent_uid=AGENT_UID, window_seconds=WINDOW
+        )
+        candidate = by_pid(results)[100]
+        self.assertNotEqual(candidate.verdict, Verdict.CONFIRMED)
+        self.assertFalse(
+            candidate.is_orphan,
+            "is_orphan asserts 'no tool_use authorized this', which was never checked",
+        )
+        self.assertIsNone(candidate.matched_tool_use)
+
+    def test_unevaluable_reaches_the_findings_layer_as_its_own_detector(self):
+        """A category the product path drops is not reported, whatever the reconciler returns."""
+        results = reconcile_orphans_scoped(
+            self._fork_gap_events(), [], agent_uid=AGENT_UID, window_seconds=WINDOW
+        )
+        unevaluable = [r for r in results if r.verdict == Verdict.UNEVALUABLE]
+        finding = unevaluable_finding(unevaluable, ts=2000.0)
+        self.assertEqual(finding.detector, DETECTOR_UNEVALUABLE)
+        self.assertNotEqual(finding.detector, DETECTOR_ORPHAN_SYSCALL)
+        self.assertEqual(finding.evidence["count"], 1)
+        self.assertEqual(finding.evidence["pids"], [100])
+
+    def test_provisioning_noise_with_unknown_parentage_is_not_unevaluable(self):
+        """The category has to stay tight or it hides the signal by flooding it.
+
+        An exec that happened BEFORE the runtime's first exec cannot be a descendant of it, no
+        matter how untraceable its parentage - that is a structural conclusion, not a guess. On the
+        real 34-exec capture this rule is what keeps the count at 0 instead of sweeping in the
+        whole `su - agent` login session.
+        """
+        events = [
+            gt(pid=50, ppid=49, uid=AGENT_UID, exe="/bin/bash", comm="bash", ts=1.0),
+            gt(pid=1, ppid=0, uid=AGENT_UID, exe=RUNTIME_EXE, comm="claude", ts=1000.0),
+        ]
+        results = reconcile_orphans_scoped(events, [], agent_uid=AGENT_UID, window_seconds=WINDOW)
+        self.assertNotIn(50, by_pid(results))
+
+    def test_nothing_is_unevaluable_when_scoping_failed_open(self):
+        """Scope inactive means every exec IS evaluated, so claiming otherwise would be false."""
+        events = [gt(pid=100, ppid=99, uid=AGENT_UID, exe="/usr/bin/wc", comm="wc", ts=1005.1)]
+        results = reconcile_orphans_scoped(events, [], agent_uid=AGENT_UID, window_seconds=WINDOW)
+        self.assertEqual(by_pid(results)[100].verdict, Verdict.CONFIRMED)
 
 
 if __name__ == "__main__":

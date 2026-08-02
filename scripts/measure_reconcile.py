@@ -38,6 +38,7 @@ from agentwatch.reconciler import runtime_scope as rs  # noqa: E402
 from agentwatch.reconciler.orphan import (  # noqa: E402
     DEFAULT_WINDOW_SECONDS,
     reconcile_orphans,
+    unevaluable_candidates,
 )
 from agentwatch.reconciler.parse_health import assess_parse_health  # noqa: E402
 from agentwatch.reconciler.process_tree import ProcessTree  # noqa: E402
@@ -64,13 +65,26 @@ def reconcile(gt_events, transcript_events, agent_uid, window, **scope_kwargs):
             continue
         verdict, reason = scope.classify_unmatched(c.event.pid)
         out.append((c, verdict, reason))
+    # Execs scoping DROPPED for want of a traceable ancestry. Without these the run reports on
+    # everything it managed to look at and says nothing about what it could not - see G23/G24.
+    for c in unevaluable_candidates(gt_events, agent_uid, scope, tree):
+        out.append((c, c.verdict, c.reason))
     return out, scope
 
 
 def summarize(rows):
+    """Counts by outcome. UNEVALUABLE carries `is_orphan=False` (the reconciler never asked whether
+    a tool_use authorized it), so it must be keyed off the verdict FIRST - counting it as `matched`
+    would turn "I did not look" into "I looked and it was fine", which is the failure this category
+    exists to prevent."""
     counts = Counter()
     for candidate, verdict, _ in rows:
-        counts["matched" if not candidate.is_orphan else str(verdict)] += 1
+        if verdict == Verdict.UNEVALUABLE:
+            counts["UNEVALUABLE"] += 1
+        elif not candidate.is_orphan:
+            counts["matched"] += 1
+        else:
+            counts[str(verdict)] += 1
     return counts
 
 
@@ -131,7 +145,10 @@ def report_correlation(rows, tool_uses, t0):
         span = f"  interval={end - start:.3f}s" if start is not None else ""
         print(f"  {tu.ts - t0:+9.3f}s  {tu.tool_name}{span}  [{label}]")
 
-    matched = [c for c, _, _ in rows if not c.is_orphan]
+    # `not is_orphan` is NOT sufficient: an UNEVALUABLE candidate also carries is_orphan=False,
+    # because the reconciler never asked the question. Counting those here would report "a
+    # tool_call authorized this exec" about an exec nobody looked at.
+    matched = [c for c, v, _ in rows if not c.is_orphan and v != Verdict.UNEVALUABLE]
     print(f"\nMATCHED (a tool_call authorized this exec): {len(matched)}")
     for c in matched:
         ev = c.event
@@ -142,6 +159,20 @@ def report_correlation(rows, tool_uses, t0):
                 None: "call interval unknown"}[inside]
         print(f"  pid={ev.pid:<8} comm={ev.comm or '?':<14} via={tu.tool_name if tu else '?':<20} "
               f"gap={gap:+.3f}s  attached_at_pid={c.matched_pid}  [{note}]")
+
+    unevaluable = [c for c, v, _ in rows if v == Verdict.UNEVALUABLE]
+    print(f"\nUNEVALUABLE (dropped by scoping — ancestry unknowable, NOT examined): "
+          f"{len(unevaluable)}")
+    for c in sorted(unevaluable, key=lambda c: c.event.ts):
+        ev = c.event
+        print(f"  {ev.ts - t0:+9.3f}s  pid={ev.pid:<8} comm={ev.comm or '?':<14} "
+              f"exe={ev.exe or '?':<28} ancestry={list(c.ancestry_checked)}")
+    if unevaluable:
+        print("  These are agent-uid execs the reconciler could form NO opinion about: their")
+        print("  parent forked without exec'ing, so the audit plane never recorded it and the")
+        print("  chain cannot be traced to the runtime. They are neither authorized nor")
+        print("  unexplained. A CONFIRMED of 0 alongside a non-zero count here does NOT mean")
+        print("  everything the agent did was examined — see NEEDS-HUMAN G-NH7.")
 
     unmatched = [(c, v) for c, v, _ in rows if c.is_orphan]
     if unmatched:

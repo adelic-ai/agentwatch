@@ -11,7 +11,7 @@ real uids beyond the range shape, nothing to sanitize.
 
 The fixture encodes the outcomes the tuning has to tell apart, all under one runtime pid:
     bash  - the shell a run_shell_command spawned    -> CONFIRMED  (it SHOULD be matched; G23)
-    wc    - the command that shell actually ran      -> never evaluated at all (G23, fork gap)
+    wc    - the command that shell actually ran      -> UNEVALUABLE: not examined (G23/G24)
     rg    - runtime-internal, no tool_call possible  -> NONE
     git   - plausible tool work, unauthorized        -> CONFIRMED  (the G17 trap)
     curl  - unexplained network egress               -> CONFIRMED  (must never be allowlisted)
@@ -35,7 +35,7 @@ from agentwatch.adapters.gemini_cli import GeminiCliAdapter
 from agentwatch.events import EXEC, TOOL_USE
 from agentwatch.groundtruth import audit_log
 from agentwatch.reconciler import runtime_scope as rs
-from agentwatch.reconciler.orphan import reconcile_orphans
+from agentwatch.reconciler.orphan import reconcile_orphans, unevaluable_candidates
 from agentwatch.reconciler.process_tree import ProcessTree
 from agentwatch.reconciler.verdict import Verdict
 
@@ -177,7 +177,25 @@ class GeminiScopeEndToEndTest(unittest.TestCase):
 
         tuned, scope = _verdicts_by_pid(self.gt_events, self.transcript, **TUNED)
         self.assertFalse(scope.in_scope(wc.pid))
-        self.assertNotIn(wc.pid, tuned)
+        self.assertNotIn(wc.pid, tuned, "the time-window primitive still cannot see it")
+
+        # …but it no longer disappears: it is reported as UNEVALUABLE, which says "not examined"
+        # rather than nothing at all (G24). The coverage hole is unchanged - only its visibility
+        # is - and the fix for the hole itself is G-NH7's fork/clone auditing.
+        #
+        # Built with the tuned scope rather than via `reconcile_orphans_scoped`, which hardcodes
+        # the Claude config: under Claude's markers no Gemini runtime is found, scoping fails open,
+        # and `wc` is evaluated normally - so this gap only exists once scoping is active. That
+        # library function not taking the tuning is a pre-existing fork (see measure_reconcile.py).
+        tree = ProcessTree(self.gt_events)
+        tuned_scope = rs.RuntimeScope(self.gt_events, AGENT_UID, tree, **TUNED)
+        reported = {
+            c.event.pid: c
+            for c in unevaluable_candidates(self.gt_events, AGENT_UID, tuned_scope, tree)
+        }
+        self.assertIn(wc.pid, reported)
+        self.assertEqual(reported[wc.pid].verdict, Verdict.UNEVALUABLE)
+        self.assertFalse(reported[wc.pid].is_orphan, "'not examined' is not 'unmatched'")
 
     def test_runtime_internal_exec_is_explained_away(self):
         tuned, _ = _verdicts(self.gt_events, self.transcript, **TUNED)

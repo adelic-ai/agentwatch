@@ -116,6 +116,17 @@ class RuntimeScope:
         # last-write-wins - otherwise a failed probe's empty argv can overwrite the real one.
         self._argv_by_pid: dict[int, set] = {}
         runtime_pids: set[int] = set()
+        # When the agent runtime first appears. Used only by `is_unevaluable`: an exec that happened
+        # BEFORE the runtime's first exec cannot be a descendant of it, whatever its ancestry looks
+        # like, so it is genuinely out of scope rather than unknown. A structural argument, not a
+        # heuristic - it is the one thing that can be concluded about a process with no traceable
+        # parentage. Accumulated in this loop rather than by re-iterating, because the argument is
+        # declared `Iterable` and a caller may hand over a generator.
+        #
+        # (Caveat, documented rather than papered over: a pid forked by the runtime's *pre-exec*
+        # incarnation - between fork and exec - is placed out of scope rather than unevaluable.
+        # That window was 4ms wide in the measured capture.)
+        runtime_first_ts: Optional[float] = None
 
         for ev in ground_truth_events:
             if ev.kind != EXEC or ev.pid is None:
@@ -131,8 +142,11 @@ class RuntimeScope:
                 ev.exe, ev.comm, ev.args, runtime_exe_prefixes, runtime_argv_markers
             ):
                 runtime_pids.add(ev.pid)
+                if ev.ts is not None and (runtime_first_ts is None or ev.ts < runtime_first_ts):
+                    runtime_first_ts = ev.ts
 
         self.runtime_pids: frozenset[int] = frozenset(runtime_pids)
+        self._runtime_first_ts = runtime_first_ts
         # No runtime pid found at all for this agent_uid -> we can't tell session activity from
         # ambient noise, so scoping fails *open* (evaluate everything, v1's old behavior) rather
         # than silently going blind. See DECISIONS.md - a security detector should never respond
@@ -143,6 +157,55 @@ class RuntimeScope:
         if not self.active:
             return True
         return any(p in self.runtime_pids for p in self._tree.ancestry(pid))
+
+    def is_unevaluable(self, pid: int, ts: Optional[float] = None) -> bool:
+        """True when this pid is out of scope only because its ancestry is UNKNOWABLE, not because
+        it was traced to a non-runtime origin (DECISIONS.md G23/G24).
+
+        The audit rule records `execve` only. A process that forks and never execs therefore has no
+        record at all, and a child it spawns carries a `ppid` pointing at a pid this tree has never
+        heard of. `ProcessTree.ancestry` stops there, the chain never reaches a runtime pid, and
+        `in_scope` says False - the same answer it gives for genuine ambient noise, but for the
+        opposite reason. Measured: `wc`, the command a `run_shell_command` shell actually ran, is
+        dropped exactly this way.
+
+        THE DISTINCTION IS THE FIRST HOP, and it has to be, because "the chain ends at an unknown
+        pid" is true of the legitimate noise too - the `su - agent` login shell's chain also
+        terminates at a pid outside the audit rule's uid range. What separates them is whether the
+        walk learned anything before it ran out:
+
+            login bash  [600771, 600769, ...]  parent 600769 IS known (`su`, container root uid)
+                                               -> traced to a non-runtime origin. Out of scope, and
+                                                  that is a conclusion.
+            wc          [600813, 600812]       parent 600812 is a number and nothing else
+                                               -> we know nothing. Not a conclusion.
+
+        So: unevaluable iff the immediate parent has no exec record of its own, AND the exec is not
+        provably older than the runtime (`ts`, below). Deliberately narrow. A wider rule ("any chain
+        ending in an unknown pid") would relabel most ambient noise as unevaluable and make the
+        category useless by flooding it - which would be a different way of hiding the same thing.
+        """
+        if not self.active:
+            # Scope inactive means everything is evaluated (fail-open, see __init__). Nothing is
+            # dropped, so nothing is unevaluable - the honest answer is not "unknown" here.
+            return False
+        if self.in_scope(pid):
+            return False
+        if (
+            ts is not None
+            and self._runtime_first_ts is not None
+            and ts < self._runtime_first_ts
+        ):
+            # It exec'd before the runtime did, so it cannot be a descendant of it - provisioning
+            # and login noise. Unknown parentage does not make that uncertain.
+            return False
+        parent = self._tree.ppid(pid)
+        if parent is None:
+            # No ppid recorded on this pid's own exec event at all - a different, rarer defect
+            # (a malformed or truncated audit record). Still unevaluable, and for a stronger
+            # reason: there is not even a parent to be ignorant about.
+            return True
+        return parent not in self._exe_by_pid
 
     def attachment(self, pid: int) -> Optional[int]:
         """The pid in `pid`'s ancestry (including itself) whose *own* ppid is a runtime pid -
