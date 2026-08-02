@@ -3,6 +3,13 @@ __pycache__/
 .pytest_cache/
 findings.jsonl
 *.local.json
+# …and the atomic-write temp files that sit NEXT to them. `*.local.json` does not match
+# `settings.local.json.tmp.598784.babbe3fedad7` — the suffix comes after the extension — so a
+# `git add -A` racing a settings write commits one. That happened on this branch (harmless
+# content, a local permission allowlist), and the same shape of near miss is what §G5 hardened
+# the capture rules against: an ignore rule that looks like it covers a class but matches one
+# filename spelling of it.
+*.local.json.tmp.*
 .DS_Store
 
 # Real capture data — prompt-bearing, never committed (see DECISIONS.md "Gemini adapter" §G3/G5).
