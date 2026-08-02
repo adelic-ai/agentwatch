@@ -151,6 +151,10 @@ Recorded because each is a real bound on the result, and none is visible from th
    entirely on scope + runtime-internal classification. A run using `run_shell_command` is needed
    before the reconciler's *matching* half can be called validated. This is the single most useful
    next capture.
+   — **DONE (2026-08-02, G-NH6/G23):** the shell-out capture reached `matched = 1`, but only after
+   fixing the adapter to stamp tool calls from their span. The bound moved rather than closed: the
+   *command* the shell ran is still unevaluated (G-NH7's fork gap), so `matched = 1, CONFIRMED = 0`
+   on that run does not mean everything the agent did was examined.
 
 2. **Drift-gating is weaker than for Claude, permanently.** Gemini's telemetry carries no CLI
    version anywhere — only `instrumentationScope.version = "v1"` (DECISIONS.md G21). An upgrade
@@ -163,46 +167,44 @@ Recorded because each is a real bound on the result, and none is visible from th
 
 ---
 
-## G-NH6 — RESOLVED (2026-08-02) — the shell-out capture ran; correlation does NOT fire
+## G-NH6 — RESOLVED (2026-08-02) — the shell-out capture ran; recall is validated for this case
 
-`matched = 0`, CONFIRMED 20 → 1. The prediction in the script header was right (the tool_call
-record is END-stamped, so the exec precedes its own authorizer by 27ms and a forward-only window
-cannot reach it), and a second, unpredicted cause turned up: the command the agent actually ran
-(`wc`) hangs off a forked pid with no exec record, so its ancestry chain dead-ends and it is
-dropped from evaluation entirely. Full reasoning and numbers in DECISIONS.md G23. The two decisions
-this leaves are G-NH7.
+**`matched` 0 → 1, CONFIRMED 1 → 0**, both measured on the same capture (the second after a fix, no
+extra run or API call). A `run_shell_command` tool_call now authorizes the shell it spawned, 4ms
+into the call. The prediction in the script header was right about the symptom — the log record is
+end-stamped, so the exec preceded it by 27ms — and wrong about the cause: the plane *does* carry a
+start-stamped authorizer, in the `tool_call` **span** the adapter was discarding. The reconciler's
+forward-only window needed no change; it was being fed the wrong end of the call. Full reasoning,
+both numbers and the near miss (the two-sided window that would also have "worked") in DECISIONS.md
+G23. One decision remains, G-NH7.
 
 ---
 
-## G-NH7 — OPEN, NOT BLOCKING — two fixes, and why neither was made unilaterally
+## G-NH7 — OPEN, NOT BLOCKING — the ancestry gap, and why it is yours rather than mine
 
-Both come out of G23. Each changes detector semantics, so each is yours to call. Ordered by how
-much they matter, which is the reverse of how obvious they are.
+The half of G23 that is **not** fixed, and the more dangerous half. An exec whose parent forked
+without exec'ing is invisible to `ProcessTree`: `in_scope` is False and `reconcile_orphans` skips it
+— not matched, not CONFIRMED, not reported as suppressed. In this capture that is `wc`, the command
+the agent actually ran. Anything behind a subshell, pipeline or `&&` chain inherits the same
+invisibility, so it is an evasion path, not only a recall miss. A run can therefore report
+`matched = 1, CONFIRMED = 0` while what the agent executed was never examined — which is precisely
+what this run does.
 
-**1. The ancestry gap (the dangerous one).** An exec whose parent forked without exec'ing is
-invisible to `ProcessTree`, so `in_scope` is False and the event is skipped — not matched, not
-CONFIRMED, not reported as suppressed. Anything behind a subshell, pipeline or `&&` chain inherits
-that invisibility, which makes it an evasion path rather than a recall miss. The naive repair
-("unknown ppid ⇒ evaluate") re-admits exactly the login-shell noise the scoping removes: in this
-capture the `su - agent` bash dead-ends the same way. The structurally correct fix is to record
-`fork`/`clone` alongside `execve` so parentage is complete — a Capsule-side audit-rule change with
-a real volume cost, which is why it is a decision and not a patch. **Recommendation:** measure the
-volume on a quiet container first; if it is tolerable, this closes the hole properly and nothing in
-this repo needs to change.
+The naive repair ("unknown ppid ⇒ evaluate") re-admits what scoping exists to remove: the
+`su - agent` login shell dead-ends the same way in the same capture and would come back as a
+finding. Telling them apart needs parentage the exec plane does not carry.
 
-**2. The end-stamped window.** `[tu.ts, tu.ts + 15s]` should be `[tu.ts - duration_ms, tu.ts + w]`
-for this runtime. Building the interval from the call's own reported duration is principled rather
-than a fudge — it is the span the call actually occupied — but it is a change to a primitive Claude
-also uses, where records are start-stamped and the current shape is correct. So it wants to be
-per-adapter, not a global widening. **Recommendation:** do this second, not first. Alone it takes
-`matched` 0 → 1 and CONFIRMED 1 → 0, i.e. it produces a run that looks fully validated while the
-command the agent actually executed is still invisible. A clean number for the wrong reason is the
-failure mode this build keeps catching itself in.
+**Recommendation:** record `fork`/`clone` alongside `execve` in the Capsule audit rule, after
+measuring the volume on an idle container — that closes the hole at the source and needs no change
+in this repo. If the volume is unacceptable, the fallback is to make a broken chain *visible*
+rather than correct: report unevaluable in-scope-uid execs as their own category, so the output
+stops implying it examined everything. That is a smaller change and I can do it on request; it
+improves honesty, not coverage.
 
-A deterministic correlation id would beat both, and this plane does not carry one:
-`gen_ai.tool.call_id` exists on the telemetry side but nothing in the exec chain references it.
-Getting one would mean the runtime stamping an env var into the tool's process — an upstream
-change, not something reconciliation can recover.
+A deterministic correlation id would make all of this moot, and the plane half-carries one:
+`gen_ai.tool.call_id` exists on the tool_call span, but nothing in the exec chain references it.
+Closing that gap means the runtime stamping the id into the spawned process's environment — an
+upstream change, not something reconciliation can recover.
 
 ---
 

@@ -31,6 +31,15 @@
 #   story assembled after the fact. `measure_reconcile.py` prints the SIGNED gap between every exec
 #   and its nearest tool_call, which is the evidence for whichever way it lands.
 #
+# RESULT OF THE FIRST RUN (2026-08-02, DECISIONS.md G23) — READ BEFORE RE-RUNNING
+#   Symptom as predicted, cause not: `matched` was 0 with the shell exec'ing 27ms before its own
+#   end-stamped record. But the plane DOES carry a start-stamped authorizer — the `tool_call`
+#   span — which the adapter was discarding. With the adapter reading it, the same capture gives
+#   `matched = 1`, `CONFIRMED = 0`. A re-run should now show matched >= 1 directly.
+#   Still open: the command the shell ran (`wc`) hangs off a forked pid with no exec record, so it
+#   is dropped from evaluation entirely. A clean CONFIRMED here does NOT mean everything the agent
+#   executed was examined — see NEEDS-HUMAN G-NH7.
+#
 # WHAT IT DOES, AND WHY EACH sudo IS NEEDED
 #   1. sudo incus exec … mkdir/printf         throwaway workspace, three files with known line
 #                                             counts, so "count the lines" has something to count
