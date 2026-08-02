@@ -119,3 +119,48 @@ anything.
 of a currently-broken invariant rather than a new capability, but it is your box and your call —
 and if it fires, it needs recording in `~/dev/gemini-capsule/DECISIONS.md`, because §3.9 and
 `restore-clean.sh` both need to know a restore invalidates the rule.
+
+---
+
+## G-NH3 — RESOLVED (2026-08-02) — the plane was blind; the hypothesis was right
+
+`02-diagnose-audit-plane.sh` confirmed it exactly: the snapshot restore had moved the container
+idmap `1065536 -> 1131072`, and the frozen rule was filtering a dead range. Marker test before the
+fix: 0 captured. After re-deriving: capture works. **Exercising I6 silently destroyed I5.**
+
+Fixed durably in the Capsule repo (`~/dev/gemini-capsule`, D12): `lib-idmap.sh` derives the live
+range, `sync-audit-rule.sh` re-derives + reloads + proves capture with a marker exec, and
+`restore-clean.sh` runs it after every restore. `OPERATIONS.md`'s I5/I6 rows no longer paste a range.
+
+---
+
+## G-NH4 — RESOLVED (2026-08-02) — the measurement
+
+**CONFIRMED on the benign run: baseline 34 → tuned 0.** 34 agent-uid execs, parse health clean.
+Full reasoning in DECISIONS.md G19–G21. Nothing was allowlisted to reach it that could not be
+justified individually; `git` was deliberately kept out of the name allowlist (G20).
+
+---
+
+## G-NH5 — OPEN, NOT BLOCKING — three limits on how far that 0 should be trusted
+
+Recorded because each is a real bound on the result, and none is visible from the number alone.
+
+1. **The correlation path was never exercised.** `matched` was 0, not 15 — no exec was authorized
+   by a tool_call. Gemini's `list_directory` runs in-process and never execs, so the 0 rests
+   entirely on scope + runtime-internal classification. A run using `run_shell_command` is needed
+   before the reconciler's *matching* half can be called validated. This is the single most useful
+   next capture.
+
+2. **Drift-gating is weaker than for Claude, permanently.** Gemini's telemetry carries no CLI
+   version anywhere — only `instrumentationScope.version = "v1"` (DECISIONS.md G21). An upgrade
+   that changes semantics without changing the schema will not be noticed by parse-health. Do not
+   rely on it to catch a Gemini CLI upgrade; it cannot.
+
+3. **The §3.10 acceptance ordering is still blind to I6-breaks-I5.** The code path is fixed but
+   the Capsule's suite still checks I5 only before it restores. Capsule-side, low priority, noted
+   in D12.
+
+**Not attempted:** step 5's network plane (squid `access.log` as a second ground-truth source).
+Explicitly out of scope for v1, and now the most valuable remaining work — for a runtime whose
+self-report plane cannot describe *what* a tool did, egress records carry proportionally more.

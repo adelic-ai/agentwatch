@@ -12,7 +12,7 @@ adapter's contract is that it never reaches a NormalizedEvent.
 import unittest
 from pathlib import Path
 
-from agentwatch.adapters.gemini_cli import GeminiCliAdapter, iter_records
+from agentwatch.adapters.gemini_cli import KNOWN_VERSIONS, GeminiCliAdapter, iter_records
 from agentwatch.events import MODEL_CALL, PROMPT, REASONING, TOOL_USE
 
 FIXTURE = Path(__file__).parent / "fixtures" / "gemini" / "synthetic_telemetry.txt"
@@ -128,8 +128,12 @@ class GeminiCliAdapterTest(unittest.TestCase):
         self.assertLess(skip_rate, 0.2, f"skip reasons: {stats.skip_reasons}")
 
     def test_version_recorded_for_parse_health(self):
+        """The value is the OTel instrumentation schema version, NOT the CLI version - Gemini's
+        telemetry carries no CLI version at all (DECISIONS.md G21). Asserting the observed `v1`
+        rather than a CLI-looking string keeps the fixture honest about what the plane provides."""
         _, stats = _events()
-        self.assertIn("0.53.1", stats.versions_seen)
+        self.assertIn("v1", stats.versions_seen)
+        self.assertEqual(stats.versions_seen.keys() - KNOWN_VERSIONS, set())
 
     def test_garbage_does_not_raise(self):
         adapter = GeminiCliAdapter()

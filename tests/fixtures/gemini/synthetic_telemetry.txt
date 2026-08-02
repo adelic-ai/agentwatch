@@ -269,7 +269,7 @@
   },
   "instrumentationScope": {
     "name": "gemini-cli",
-    "version": "0.53.1"
+    "version": "v1"
   },
   "_spanContext": {
     "traceId": "0000000000000000000000000000000a",

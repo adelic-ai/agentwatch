@@ -717,3 +717,64 @@ the runtime-internal `node` and disappeared.
 the 0 rests entirely on scope + runtime-internal classification. Consistent with §1 (tool calls are
 name-only), but it means this run did not exercise the correlation path at all. A run that shells
 out (`run_shell_command`) is needed before the reconciler's matching half can be called validated.
+
+## G21: the drift gate was crying wolf, and the fixture taught it to
+
+`KNOWN_VERSIONS` was `{"0.53.1"}`. Every real run therefore logged
+`transcript version(s) ['v1'] not in KNOWN_VERSIONS` — the gate fired at 100%.
+
+**Where `0.53.1` came from: I made it up.** The synthetic fixture (G14) needed a value for
+`instrumentationScope.version`, and rather than using what the step-0 probe showed, I filled in the
+CLI version, which reads plausibly. The adapter constant was then written to match the fixture. The
+fixture, not the telemetry, was the source of truth — which is the one thing a synthetic fixture
+must never become.
+
+A full real capture contains no CLI version at all:
+
+    17 records   instrumentationScope.version = 'v1'
+     6 records   scopeMetrics[].scope.version = ''
+     0 records   anything resembling 0.53.1
+
+Two consequences, and the second is the one that matters:
+
+**The gate is fixed** — `KNOWN_VERSIONS = {"v1"}`, the observed value, so it is silent on a healthy
+run and fires if the schema changes. A check that always fires is a check people learn to ignore,
+and this is the check that would have caught G19: a parser that suddenly extracts nothing shows up
+in parse health first. Leaving it noisy would have disarmed the alarm for the exact failure class
+this build kept hitting.
+
+**Drift-gating for Gemini is permanently weaker than for Claude.** Claude Code stamps a real
+`version` on every message line, so parse-health can tell that the runtime moved under the parser.
+Gemini's plane carries only the OTel instrumentation-schema version, which changes when Google
+reshapes telemetry — not when the CLI upgrades. So: a breaking schema change is caught, a
+same-schema semantic change is not. That is a limitation to state, not to paper over, and it is
+recorded in the adapter next to the constant so it is read at the point of use.
+
+The fixture now carries `"v1"`. **Rule: a synthetic fixture may fabricate values, but never invent
+a field's shape or plausible-looking content the probe did not show.** Fabricating `SYNTHETIC BODY`
+is fine — it is obviously not real. Fabricating `0.53.1` is not, because it is indistinguishable
+from an observation and code gets written against it.
+
+## G22: durability pass (2026-08-02)
+
+Corrections made after the measurement, so the result survives contact with the next reader:
+
+- **`03-capture-and-measure.sh` now captures RAW** (`ausearch` without `-i`). Its header had
+  asserted `-i` was REQUIRED — wrong on this host, and the direct cause of G19's lost cycle. The
+  parser reads both dialects now, but raw is preferred on the merits: raw timestamps are
+  unambiguous epoch, while `-i` renders local time in a locale-dependent format that cannot be read
+  reliably off the machine that produced it. Ground truth should not depend on the reader's
+  timezone.
+- **Capsule D12** — `restore-clean.sh` re-derives the audit rule after every restore, via a new
+  `sync-audit-rule.sh` that proves capture with a marker exec instead of trusting `auditctl -l`.
+  This closes the G12 follow-up: without it, the next restore silently blinds the plane again and
+  the next person spends the same cycle finding out.
+- **`OPERATIONS.md`'s I5 row** still told the operator to check `uid >= 1065536` — the stale
+  pre-restore range, and the fourth instance of the frozen-value bug. Replaced with a derivation.
+- **NEEDS-HUMAN.md** G-NH3 was still marked OPEN/BLOCKING with the plane declared dead. Closed,
+  with G-NH5 recording the three real limits on the 0 (see below).
+
+The honest summary of what is and is not established: the adapter parses real 0.53.1 telemetry, the
+scope tuning takes a benign run from 34 CONFIRMED to 0, and every allowlist entry is justified from
+observed data. The *matching* half of the reconciler has never run against a Gemini exec, because
+no tool call in the sampled run ever execed. That is the next capture, not a caveat to bury.

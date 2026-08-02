@@ -68,9 +68,24 @@ from typing import Iterable, Iterator, Optional
 from agentwatch.adapters.base import TranscriptAdapter
 from agentwatch.events import MODEL_CALL, PROMPT, TOOL_USE, NormalizedEvent, ParseStats
 
-# Versions this adapter has been validated against real telemetry for. Mirrors
-# claude_code.KNOWN_VERSIONS: recorded and fed to parse-health, does not branch parsing.
-KNOWN_VERSIONS = frozenset({"0.53.1"})
+# Versions this adapter has been validated against. Mirrors claude_code.KNOWN_VERSIONS: recorded
+# and fed to parse-health, does not branch parsing.
+#
+# THIS IS THE OTel INSTRUMENTATION SCHEMA VERSION, NOT THE CLI VERSION - a real and unwelcome
+# difference from the Claude adapter, which reads the actual `version` Claude Code stamps on every
+# message line. Gemini CLI's telemetry carries **no CLI version anywhere**: a full real capture
+# contains only `instrumentationScope.version = "v1"` (17 records) and an empty
+# `scopeMetrics[].scope.version` (6). The CLI was 0.53.1 and that string appears nowhere.
+#
+# So drift-gating is strictly weaker here than for Claude. `v1` will not change when the CLI
+# upgrades, only when Google reshapes the telemetry schema - which catches the breaking case
+# (fields moved) but not the silent one (same schema, different semantics). Anyone relying on
+# parse-health to notice a Gemini upgrade should know it will not. Recorded in DECISIONS.md G21.
+#
+# It previously read {"0.53.1"}, which was never observed - it came from a synthetic fixture that
+# invented the field. The gate therefore fired on 100% of real runs. A health check that always
+# fires is one people learn to ignore, and it is the check that would have caught G19.
+KNOWN_VERSIONS = frozenset({"v1"})
 
 # event.name values mapped to an emitted event. Anything else decodes fine and is ignored, the
 # same way claude_code.py ignores mode/ai-title/attachment lines — not an error, just nothing to

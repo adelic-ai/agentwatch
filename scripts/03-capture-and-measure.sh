@@ -9,11 +9,16 @@
 # WHAT IT DOES, AND WHY EACH sudo IS NEEDED
 #   1. sudo incus exec … mkdir/touch          throwaway workspace for a listing tool to act on
 #   2. sudo incus exec … gemini --skip-trust  ONE benign prompt. Read-only, no writes, one API call.
-#   3. sudo ausearch -i -k capsule -ts …      the run's audit records.
-#        `-i` is REQUIRED, not cosmetic: groundtruth/audit_log.py keys on the *translated*
-#        `SYSCALL=execve` field that only `-i` emits. Raw ausearch output has `syscall=59` and the
-#        parser silently yields zero exec events from it — the same shape of silent
-#        under-extraction parse_health.py exists to catch, one layer down.
+#   3. sudo ausearch -k capsule -ts …         the run's audit records, RAW (no -i).
+#        This comment previously said `-i` was REQUIRED because the parser keys on the translated
+#        `SYSCALL=execve`. That was wrong on this host and cost a full diagnostic cycle: auditd 3.x
+#        `-i` *interpolates* translations in place rather than appending them, producing
+#        `syscall=execve`, `uid=unknown(1132072)` and — fatally — a human-readable local-time
+#        record header, which the parser could not group on at all. 38 real execs parsed as 0.
+#        The parser now reads both dialects (DECISIONS.md G19), so either capture works. Raw is
+#        preferred anyway, and not for compatibility: raw timestamps are unambiguous epoch, while
+#        `-i` renders LOCAL time in a LOCALE-dependent format that cannot be read reliably off the
+#        machine that produced it. Ground truth should not depend on the reader's timezone.
 #   4. sudo incus file pull … telemetry.jsonl the self-report plane.
 #   5. python3 scripts/measure_reconcile.py   the reconciliation, baseline vs tuned.
 #
@@ -65,8 +70,8 @@ set -e
 echo "gemini exit status: ${RC}"
 sleep 4
 
-say "3. Capture the ground-truth plane (ausearch -i — see the header on why -i matters)"
-sudo ausearch -i -k capsule -ts "${RUN_START}" > "${OUT}/audit.log" 2>/dev/null || true
+say "3. Capture the ground-truth plane (RAW ausearch — see the header on why not -i)"
+sudo ausearch -k capsule -ts "${RUN_START}" > "${OUT}/audit.log" 2>/dev/null || true
 sudo chown "$(id -un):$(id -gn)" "${OUT}/audit.log"
 chmod 600 "${OUT}/audit.log"
 echo "audit lines captured: $(wc -l < "${OUT}/audit.log")"
