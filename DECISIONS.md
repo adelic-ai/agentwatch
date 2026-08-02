@@ -600,3 +600,41 @@ So the tuning rule for §4: **add a name only if no tool_call could ever authori
 else stays visible. `measure_reconcile.py` prints each CONFIRMED candidate's comm/exe and its
 attachment point precisely so each is judged individually rather than swept in as a batch — and it
 says so in its own output, because a suggested-additions list is very easy to paste wholesale.
+
+## G18: the harness was nudging toward a clean number — caught by dry-running it
+
+The real measurement needs sudo and a live API call, so it belongs to the human (the D6 model).
+But `measure_reconcile.py` had never executed against audit-shaped input, and a harness that
+crashes or silently reports zero would have burned that run. So it was dry-run first against a
+synthetic audit log built to the shape step 0b observed (`node`/`gemini`/`timeout` at the agent
+uid), paired with the existing synthetic telemetry fixture.
+
+The harness worked — baseline 6 CONFIRMED, tuned 2 — but the dry run surfaced a defect in the
+tooling itself. The script ended by printing the CONFIRMED attachment vocabulary under the heading
+**"Suggested additions to GEMINI_RUNTIME_INTERNAL_NAMES"**. On the very first run, that list was:
+
+    ['curl', 'git']
+
+Pasting the suggestion would have allowlisted `curl` — unexplained network egress, the single exec
+the detector most exists to surface. The script written to *enforce* G17 was generating the exact
+temptation G17 warns about, and it would have been most persuasive on a real capture at 2am.
+
+Fixed: the list is now labelled a description of the data, explicitly *not* a suggested allowlist,
+and is followed by the four candidate explanations (clock skew / in-process tool / genuine runtime
+housekeeping / real finding) with the allowlist named as correct in only one of them. The output
+records the `curl` incident by name, so the reason the framing is defensive is legible to whoever
+reads it next.
+
+**The general shape, third time in this build:** a tool that summarizes evidence tends to acquire a
+default action, and the default action drifts toward whatever makes the output look clean. G12 was
+a rule that looked correct while filtering a dead range; G16 was a probe whose stale default looked
+like an answer; this is a report whose suggestion looked like a recommendation.
+
+`tests/test_gemini_scope_end_to_end.py` (8 tests, fully synthetic) now locks the behaviour in:
+the tuning must identify the runtime, must strictly reduce CONFIRMED, must let the tool_call window
+authorize `ls`, must explain away `rg` — and must still report `curl` and `git` as CONFIRMED. That
+last pair fails loudly if anyone flattens the number by widening the allowlist. It also asserts the
+fixture is non-empty first, so the suite cannot pass vacuously.
+
+**Still outstanding: the real number.** Everything above is machinery validation on fabricated
+records. The Gemini analog of 83 -> 0 requires `scripts/03-capture-and-measure.sh` on the host.

@@ -159,16 +159,25 @@ def main() -> int:
             attach_comm = tuned_scope._comm_by_pid.get(attach) if attach else None
             print(f"  pid={ev.pid:<8} comm={ev.comm or '?':<18} exe={ev.exe or '?':<40} "
                   f"attach={attach_comm or '-'}")
-        print("\nSuggested additions to GEMINI_RUNTIME_INTERNAL_NAMES, IF each is genuinely")
-        print("runtime housekeeping rather than something that should have been authorized:")
         names = {
             tuned_scope._comm_by_pid.get(tuned_scope.attachment(c.event.pid))
             for c, _ in confirmed
             if tuned_scope.attachment(c.event.pid)
         }
-        print(f"  {sorted(n for n in names if n)}")
-        print("Judge them one at a time. Adding a name silences a whole class of exec forever;")
-        print("that is the right call for runtime noise and the wrong one for anything else.")
+        print(f"\nAttachment vocabulary for the above: {sorted(n for n in names if n)}")
+        print("This is a DESCRIPTION OF THE DATA, NOT A SUGGESTED ALLOWLIST. Do not paste it into")
+        print("GEMINI_RUNTIME_INTERNAL_NAMES. An earlier version of this script printed exactly")
+        print("this list under the heading 'suggested additions', and on the very first dry run it")
+        print("recommended silencing `curl` — the one exec you would most want to see. A tool that")
+        print("nudges you toward a clean number is worse than no tool.")
+        print("")
+        print("For each name above, the first question is NOT 'should I allowlist it' but:")
+        print("  WHY DIDN'T A tool_call AUTHORIZE THIS?")
+        print("  - clock skew or a window too tight    -> fix the window, not the allowlist")
+        print("  - the tool ran in-process, no exec    -> expected; nothing to allowlist")
+        print("  - the runtime spawned it for itself   -> allowlist IS correct (npm/env/node/rg)")
+        print("  - none of the above                   -> this is a real finding. Leave it.")
+        print("Allowlist a name only if NO tool_call could ever authorize it (DECISIONS.md G17).")
     else:
         print("Clean. Every agent-uid exec is either authorized by a tool_call or explained as")
         print("runtime activity the self-report plane structurally cannot observe.")
