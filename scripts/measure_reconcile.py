@@ -99,14 +99,36 @@ def main() -> int:
     print(f"telemetry records     : {tstats.lines_total}")
     print(f"telemetry events      : {len(transcript_events)}")
     print(f"  of which TOOL_USE   : {len(tool_uses)}")
-    if not agent_execs:
-        print("\nNO AGENT-UID EXECS. Nothing to reconcile — check --agent-uid against the")
-        print("container's live idmap base + 1000 (see DECISIONS.md G12).")
-        return 1
-
+    # Printed BEFORE the empty-set guard, deliberately. An earlier version returned first and the
+    # operator got "check --agent-uid" with no way to see what the uids actually were — the same
+    # mistake as truncating the output of the bisect branch that decides what the bisect means.
+    # A diagnostic that withholds the evidence for its own conclusion is worse than silence.
     print("\n=== uid distribution in the capture ===")
     for uid, count in Counter(e.uid for e in execs).most_common():
         print(f"  {count:5d}  uid={uid}{'  <- reconciling this one' if uid == args.agent_uid else ''}")
+
+    if not agent_execs:
+        print(f"\nNO EXECS AT uid={args.agent_uid}. Nothing to reconcile.")
+        if execs:
+            observed = sorted({e.uid for e in execs if e.uid is not None})
+            print(f"The capture DOES contain {len(execs)} execs, at uid(s): {observed}")
+            print("So the ground-truth plane is recording — this is a --agent-uid mismatch, not a")
+            print("blind plane. Compare the above against the container's live idmap:")
+            print("    sudo incus config get gemini-capsule volatile.idmap.current --project capsule")
+            print("`agent` is assumed to be base+1000; if the uids above are base+N for some other")
+            print("N, that assumption is what is wrong (check `id -u agent` inside the container).")
+            print("\n=== comm/exe at each observed uid, to identify which one is the agent ===")
+            for uid in observed:
+                names = Counter(
+                    (e.comm, e.exe) for e in execs if e.uid == uid
+                )
+                print(f"  uid={uid}:")
+                for (comm, exe), count in names.most_common(12):
+                    print(f"      {count:4d}  comm={comm or '?':<18} exe={exe or '?'}")
+        else:
+            print("The capture contains NO execs at all — the plane is blind again. Re-run")
+            print("scripts/02-diagnose-audit-plane.sh before trusting anything from this script.")
+        return 1
 
     print("\n=== exec population at agent uid (comm/exe — §4 vocabulary, never argv) ===")
     for (comm, exe), count in Counter((e.comm, e.exe) for e in agent_execs).most_common():
@@ -132,6 +154,7 @@ def main() -> int:
         runtime_exe_prefixes=rs.GEMINI_RUNTIME_EXE_PREFIXES,
         runtime_internal_names=rs.GEMINI_RUNTIME_INTERNAL_NAMES,
         runtime_argv_markers=rs.GEMINI_RUNTIME_ARGV_MARKERS,
+        runtime_internal_argv=rs.GEMINI_RUNTIME_INTERNAL_ARGV,
     )
 
     print("\n=== BASELINE — untuned (Claude scope config, i.e. no §4) ===")
@@ -146,10 +169,23 @@ def main() -> int:
     for key, count in sorted(summarize(tuned_rows).items()):
         print(f"  {key:<12} {count}")
 
-    confirmed = [
-        (c, r) for c, v, r in tuned_rows if v == Verdict.CONFIRMED
-    ]
+    all_confirmed = [(c, r) for c, v, r in tuned_rows if v == Verdict.CONFIRMED]
+    # A failed execve ran nothing. A PATH search records one ENOENT attempt per directory tried
+    # before the hit, at the same pid and millisecond as the success, carrying the pre-exec comm
+    # and an empty argv - so counting failures alongside successes double-counts a single action
+    # and misattributes it. They are still reported, because an *attempted* exec is signal, but
+    # they are not the headline number.
+    confirmed = [(c, r) for c, r in all_confirmed if c.event.success is not False]
+    failed = [(c, r) for c, r in all_confirmed if c.event.success is False]
+
     print(f"\n=== THE NUMBER: CONFIRMED on this benign run = {len(confirmed)} ===")
+    print(f"(successful execs only; {len(failed)} additional CONFIRMED were failed execve "
+          f"attempts — see below)")
+    if failed:
+        print("\nFailed (non-executing) attempts, reported but excluded from the number above:")
+        for candidate, _ in failed:
+            ev = candidate.event
+            print(f"  pid={ev.pid:<8} comm={ev.comm or '?':<18} exe={ev.exe or '?'}  (success=no)")
     if confirmed:
         print("Each CONFIRMED below is either a real unexplained exec or a gap in the §4")
         print("allowlist. comm/exe only — argv is prompt-bearing.")

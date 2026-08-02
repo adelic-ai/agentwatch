@@ -14,3 +14,8 @@ type=SYSCALL msg=audit(1785632060.500:107): arch=c000003e syscall=59 success=yes
 type=EXECVE msg=audit(1785632060.500:107): argc=2 a0="curl" a1="SYNTHETIC-URL-PLACEHOLDER"
 type=SYSCALL msg=audit(1785632061.000:108): arch=c000003e syscall=59 success=yes exit=0 ppid=103 pid=107 uid=1132072 gid=1132072 comm="git" exe="/usr/bin/git" key="exec"ARCH=x86_64 SYSCALL=execve AUID="unset" UID="agent"
 type=EXECVE msg=audit(1785632061.000:108): argc=2 a0="git" a1="status"
+type=SYSCALL msg=audit(1785632062.000:109): arch=c000003e syscall=59 success=yes exit=0 ppid=103 pid=108 uid=1132072 gid=1132072 comm="git" exe="/usr/bin/git" key="exec"ARCH=x86_64 SYSCALL=execve AUID="unset" UID="agent"
+type=EXECVE msg=audit(1785632062.000:109): argc=3 a0="git" a1="rev-parse" a2="--show-toplevel"
+type=SYSCALL msg=audit(1785632060.500:110): arch=c000003e syscall=59 success=no exit=-2 ppid=103 pid=106 uid=1132072 gid=1132072 comm="node" exe="/usr/bin/node" key="exec"ARCH=x86_64 SYSCALL=execve AUID="unset" UID="agent"
+type=SYSCALL msg=audit(1785632063.000:111): arch=c000003e syscall=59 success=yes exit=0 ppid=103 pid=110 uid=1132072 gid=1132072 comm="git" exe="/usr/bin/git" key="exec"ARCH=x86_64 SYSCALL=execve AUID="unset" UID="agent"
+type=EXECVE msg=audit(1785632063.000:111): argc=3 a0="git" a1="push" a2="origin"

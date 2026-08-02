@@ -39,6 +39,22 @@ def _load():
     return gt_events, transcript
 
 
+def _verdicts_by_pid(gt_events, transcript, **scope_kwargs):
+    """Same as _verdicts but keyed by pid, for records that share a comm."""
+    tree = ProcessTree(gt_events)
+    scope = rs.RuntimeScope(gt_events, AGENT_UID, tree, **scope_kwargs)
+    out = {}
+    for candidate in reconcile_orphans(
+        gt_events, transcript, AGENT_UID, 15.0, scope_check=scope.in_scope
+    ):
+        verdict = (
+            "matched" if not candidate.is_orphan
+            else scope.classify_unmatched(candidate.event.pid)[0]
+        )
+        out[candidate.event.pid] = verdict
+    return out, scope
+
+
 def _verdicts(gt_events, transcript, **scope_kwargs):
     """Mirror of measure_reconcile.reconcile - same primitives, tuning injectable."""
     tree = ProcessTree(gt_events)
@@ -58,6 +74,7 @@ TUNED = {
     "runtime_exe_prefixes": rs.GEMINI_RUNTIME_EXE_PREFIXES,
     "runtime_internal_names": rs.GEMINI_RUNTIME_INTERNAL_NAMES,
     "runtime_argv_markers": rs.GEMINI_RUNTIME_ARGV_MARKERS,
+    "runtime_internal_argv": rs.GEMINI_RUNTIME_INTERNAL_ARGV,
 }
 
 
@@ -104,6 +121,26 @@ class GeminiScopeEndToEndTest(unittest.TestCase):
         improved it - a benign-run count of zero is only meaningful if this still gets through."""
         tuned, _ = _verdicts(self.gt_events, self.transcript, **TUNED)
         self.assertEqual(tuned["curl"], Verdict.CONFIRMED)
+
+    def test_runtime_startup_git_probe_is_allowlisted_by_exact_argv(self):
+        """`git rev-parse --show-toplevel` (pid 108) is repo detection the runtime does before any
+        tool_call exists — DECISIONS.md G20, measured on the real benign run."""
+        tuned, _ = _verdicts_by_pid(self.gt_events, self.transcript, **TUNED)
+        self.assertEqual(tuned[108], Verdict.NONE)
+
+    def test_exact_argv_allowlist_does_not_silence_other_git_invocations(self):
+        """The load-bearing constraint on G20. Allowlisting the NAME `git` would have silenced
+        `git push` (pid 110) too; allowlisting the exact argv must not."""
+        tuned, _ = _verdicts_by_pid(self.gt_events, self.transcript, **TUNED)
+        self.assertEqual(tuned[110], Verdict.CONFIRMED)
+
+    def test_failed_execve_does_not_clobber_the_identity_of_the_successful_one(self):
+        """A PATH search logs an ENOENT attempt at the same pid as the hit, carrying the pre-exec
+        comm and no argv. If it overwrote the real identity, `curl` (pid 106) would be classified
+        as the runtime-internal `node` and vanish."""
+        tuned, scope = _verdicts_by_pid(self.gt_events, self.transcript, **TUNED)
+        self.assertEqual(scope._comm_by_pid[106], "curl")
+        self.assertEqual(tuned[106], Verdict.CONFIRMED)
 
     def test_git_is_not_allowlisted_on_sight(self):
         """DECISIONS.md G17: `git` is exactly the shape a tool_call ought to authorize, so an

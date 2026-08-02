@@ -638,3 +638,82 @@ fixture is non-empty first, so the suite cannot pass vacuously.
 
 **Still outstanding: the real number.** Everything above is machinery validation on fabricated
 records. The Gemini analog of 83 -> 0 requires `scripts/03-capture-and-measure.sh` on the host.
+
+## G19: the ground-truth parser could not read this host's ausearch output
+
+The first real capture reported `NO AGENT-UID EXECS`. It was not a blind plane and not a uid
+mismatch: 254 lines, 38 real `execve` records, and `audit_log.py` parsed **zero** of them.
+
+`ausearch -i` has no single output format. The checked-in sample *appends* translated fields to the
+raw ones; auditd 3.x on this host *interpolates* them in place. Three independent breakages:
+
+| | sample (appended) | this host (interpolated) |
+|---|---|---|
+| syscall | `syscall=59` + `SYSCALL=execve` | `syscall=execve` |
+| uid | `uid=3000` + `UID="agent"` | `uid=unknown(1132072)` |
+| key | `key="exec"` | `key=capsule` |
+| header | `msg=audit(1785632021.000:101):` | `msg=audit(08/02/2026 08:25:35.059:2417) :` |
+
+The record header was the fatal one — human-readable local time instead of epoch, plus a space
+before the trailing colon — so `_MSG_RE` matched nothing and every line was discarded before any
+field was read. Note the shape: the plane recorded correctly, the capture was intact, and the
+system reported an empty result. Same class as G12, one layer up.
+
+`03-capture-and-measure.sh`'s own header asserted `-i` was REQUIRED because the parser keys on
+`SYSCALL=`. On this auditd, `-i` is precisely what produces the form the parser rejected.
+
+Fixed structurally rather than by switching dialect: `_field` prefers the translated spelling and
+`_int_field` the raw one (`UID="agent"` is a name, the number is only in `uid=`); execve is matched
+by name or by number-for-the-arch; ids are unwrapped from `unknown(N)`; both header forms parse.
+Unrecognised syscalls, unparseable uids and unparseable timestamps are now recorded as *skip
+reasons*, so an unreadable capture can never again look like an empty one. `----` separators no
+longer count as skips (they were inflating `skip_rate` toward a false "degraded").
+
+Interpreted timestamps are local-time and locale-shaped; only month-first is attempted, because
+`%d/%m` vs `%m/%d` is ambiguous for twelve days a month and guessing wrong would shift every event
+by months and silently turn the whole reconciliation into orphans. Raw capture remains preferable.
+
+## G20: THE NUMBER — 34 -> 0 on the benign run, and why `git` is not in the name allowlist
+
+Benign tool-using run, `agent` uid 1132072, 34 agent-uid execs, parse health clean (skip_rate 0.0%):
+
+    BASELINE (untuned, Claude scope config)   CONFIRMED = 34
+    TUNED    (GEMINI_* scope config, §4)      CONFIRMED = 0     <- the Gemini analog of 83 -> 0
+
+Baseline is 34 because Claude's markers find no Gemini runtime at all, so scoping fails open and
+every exec is evaluated — the intended fail-open behaviour, and the reason a tuned number means
+nothing without it. Tuned identifies 2 runtime pids, puts 15 execs in scope and explains all 15.
+The other 19 are the systemd/gpg-agent/login noise of the `su - agent` session, correctly out of
+scope rather than allowlisted.
+
+**The judgment G17 demanded.** Before the last fix the only CONFIRMED execs were `git` — exactly the
+name the suggested §4 vocabulary would have swept in. Asking "why didn't a tool_call authorize
+this?" first, the evidence was decisive:
+
+    +2.628s  git rev-parse --show-toplevel   (spawned directly by the runtime)
+    +2.792s  git rev-parse --show-toplevel
+    +8.350s  TOOL_CALL list_directory        <- the session's only tool_call, ~6s LATER
+
+Repo-root detection for gitignore-aware file discovery, running before the model has produced
+anything. No tool_call can authorize an exec that precedes every tool_call — that is G17's bar.
+
+But `git` did **not** go into `GEMINI_RUNTIME_INTERNAL_NAMES`, because that would silence `git push`
+and `git commit` — the invocations a detector most needs to report — to explain a startup probe.
+Added instead as `GEMINI_RUNTIME_INTERNAL_ARGV`, an exact-argv tuple. It is reachable only for a pid
+the runtime spawned *directly*: a `git` run through a tool_call's shell attaches at the shell and is
+never covered. `test_exact_argv_allowlist_does_not_silence_other_git_invocations` fails if anyone
+widens it.
+
+**A double-count found on the way.** The 4 CONFIRMED rows were 2 pids, each appearing twice: a
+`PATH` search logs an ENOENT `execve` attempt at the same pid and millisecond as the hit, carrying
+the *pre-exec* comm (`node`) and empty argv. Two consequences, both fixed: failed execves are no
+longer the headline number (they executed nothing) but are still reported separately, since an
+attempted exec is signal; and a failed attempt no longer clobbers the successful exec's identity in
+`RuntimeScope` — without that, `curl` at a pid whose PATH probe failed would have been classified as
+the runtime-internal `node` and disappeared.
+
+**Caveat on the 0.** No exec was authorized by a tool_call — `matched` is 0, not 15. Gemini's
+`list_directory` runs in-process and never execs, so the tool_call plane authorized nothing here;
+the 0 rests entirely on scope + runtime-internal classification. Consistent with §1 (tool calls are
+name-only), but it means this run did not exercise the correlation path at all. A run that shells
+out (`run_shell_command`) is needed before the reconciler's matching half can be called validated.

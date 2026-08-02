@@ -103,19 +103,30 @@ class RuntimeScope:
         runtime_internal_names: frozenset[str] = DEFAULT_RUNTIME_INTERNAL_NAMES,
         posix_shells: frozenset[str] = DEFAULT_POSIX_SHELLS,
         runtime_argv_markers: frozenset[str] = DEFAULT_RUNTIME_ARGV_MARKERS,
+        runtime_internal_argv: frozenset = frozenset(),
     ) -> None:
         self._tree = tree
         self._runtime_internal_names = runtime_internal_names
+        self._runtime_internal_argv = runtime_internal_argv
         self._posix_shells = posix_shells
         self._exe_by_pid: dict[int, Optional[str]] = {}
         self._comm_by_pid: dict[int, Optional[str]] = {}
+        # A pid can execve more than once (a PATH search records a failed attempt and then the
+        # successful one under the same pid), so argv is accumulated as a set rather than
+        # last-write-wins - otherwise a failed probe's empty argv can overwrite the real one.
+        self._argv_by_pid: dict[int, set] = {}
         runtime_pids: set[int] = set()
 
         for ev in ground_truth_events:
             if ev.kind != EXEC or ev.pid is None:
                 continue
-            self._exe_by_pid[ev.pid] = ev.exe
-            self._comm_by_pid[ev.pid] = ev.comm
+            # Don't let a failed execve (argv=(), pre-exec comm) clobber the identity of the
+            # successful one at the same pid.
+            if ev.success is not False or ev.pid not in self._exe_by_pid:
+                self._exe_by_pid[ev.pid] = ev.exe
+                self._comm_by_pid[ev.pid] = ev.comm
+            if ev.args:
+                self._argv_by_pid.setdefault(ev.pid, set()).add(tuple(ev.args))
             if ev.uid == agent_uid and is_runtime_exec(
                 ev.exe, ev.comm, ev.args, runtime_exe_prefixes, runtime_argv_markers
             ):
@@ -149,6 +160,16 @@ class RuntimeScope:
         comm = self._comm_by_pid.get(pid)
         exe_base = _basename(self._exe_by_pid.get(pid))
         if comm in self._runtime_internal_names or exe_base in self._runtime_internal_names:
+            return True
+        # Exact-argv allowlist. Deliberately narrower than the name-based one above: some binaries
+        # are runtime housekeeping for *one specific invocation* and genuine agent action for every
+        # other. `git` is the worked example - `git rev-parse --show-toplevel` is repo detection the
+        # runtime does at startup, before the model has produced anything, while `git push` is
+        # exactly what a detector exists to surface. Allowlisting the name would silence both; this
+        # silences only the observed housekeeping call. Note this is reachable only for a pid the
+        # runtime spawned DIRECTLY (see `attachment`) - a git run via a tool_call's shell attaches
+        # at the shell, not here, so it is never covered by this rule.
+        if any(argv in self._runtime_internal_argv for argv in self._argv_by_pid.get(pid, ())):
             return True
         return comm in self._posix_shells
 
@@ -194,4 +215,17 @@ GEMINI_RUNTIME_ARGV_MARKERS: frozenset[str] = frozenset({"gemini"})
 # is the self-update/version check. `rg` is here because Gemini CLI logs a `gemini_cli.ripgrep_
 # fallback` event and attempts ripgrep before falling back to its in-process GrepTool - so an `rg`
 # exec is runtime behavior no tool_call authorizes, the same shape as Claude's ripgrep searches.
+#
+# `git` is deliberately NOT here, though it was the only thing CONFIRMED on the benign run and the
+# obvious way to reach zero. See GEMINI_RUNTIME_INTERNAL_ARGV below and DECISIONS.md G20.
 GEMINI_RUNTIME_INTERNAL_NAMES: frozenset[str] = frozenset({"node", "npm", "env", "rg"})
+
+# MEASURED, not guessed (DECISIONS.md G20). On the benign run the only CONFIRMED execs were two
+# `git rev-parse --show-toplevel` calls at +2.6s, spawned directly by the runtime, ~6s BEFORE the
+# session's only tool_call - Gemini CLI detecting whether cwd is a repo, for gitignore-aware file
+# discovery. No tool_call could authorize an exec that precedes every tool_call, which is G17's bar
+# for allowlisting. It is listed as an exact argv tuple rather than as the name `git`, so that
+# `git push` / `git commit` / any other invocation still reports.
+GEMINI_RUNTIME_INTERNAL_ARGV: frozenset = frozenset({
+    ("git", "rev-parse", "--show-toplevel"),
+})
