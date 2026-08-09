@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional
 
 DETECTOR_ORPHAN_SYSCALL = "orphan_syscall"
 DETECTOR_DIVERGENCE = "divergence"
@@ -25,6 +25,17 @@ DETECTOR_PARSE_HEALTH = "parse_health"  # v2, design doc v2 §4 - see reconciler
 # separate from orphan_syscall on purpose - conflating "I looked and this is unexplained" with "I
 # could not look" is exactly what DECISIONS.md G24 exists to stop.
 DETECTOR_UNEVALUABLE = "unevaluable_exec"
+
+# Detectors whose findings derive from the GROUND-TRUTH plane, so they inherit that plane's
+# substrate trust tier (CONTRACT.md §4 / contract.py PlaneTrust). Transcript-plane findings
+# (divergence, parse_health) and the filesystem/flag findings (self_mod, agent_flag) are NOT here:
+# the ground-truth plane does not vouch for them, so stamping a trust tier on them would be a false
+# claim. lethal_trifecta is a transcript-plane stub -> excluded.
+GROUND_TRUTH_DETECTORS = frozenset({
+    DETECTOR_ORPHAN_SYSCALL,
+    DETECTOR_LAN_REACH,
+    DETECTOR_UNEVALUABLE,
+})
 
 
 def _make_id(detector: str, *key_parts: object) -> str:
@@ -41,6 +52,12 @@ class Finding:
     summary: str
     evidence: dict = field(default_factory=dict)
     session_id: Optional[str] = None
+    # The substrate trust tier of the ground-truth plane this finding derives from (a PlaneTrust
+    # value, CONTRACT.md §4), or None when undeclared / not ground-truth-derived. Deliberately NOT
+    # part of `id` (see stamp_plane_trust): a finding's identity is the event it describes, not the
+    # operator's trust declaration. Optional with a default so old findings.jsonl lines (written
+    # before this field existed) still load via from_json.
+    plane_trust: Optional[str] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -49,6 +66,25 @@ class Finding:
     def from_json(line: str) -> "Finding":
         d = json.loads(line)
         return Finding(**d)
+
+
+def stamp_plane_trust(findings: Iterable["Finding"], tier: Optional[str]) -> List["Finding"]:
+    """Stamp the ground-truth substrate trust tier (CONTRACT.md §4) onto the findings that derive
+    from the ground-truth plane (GROUND_TRUTH_DETECTORS). Transcript-plane and filesystem findings
+    are left untouched - the ground-truth plane does not vouch for them.
+
+    `tier` is a PlaneTrust *value* (str) or None. None leaves every finding unstamped - the honest
+    default when the operator has not declared the substrate. Applied AFTER id computation, so a
+    finding's identity and its dedup are independent of the declared tier (the same orphan is the
+    same finding whether the plane was declared unforgeable or not; the tier is metadata about how
+    much to trust it, not part of what it is).
+    """
+    if tier is None:
+        return list(findings)
+    return [
+        replace(f, plane_trust=tier) if f.detector in GROUND_TRUTH_DETECTORS else f
+        for f in findings
+    ]
 
 
 # --- per-detector Finding constructors ----------------------------------------------------------
