@@ -139,7 +139,7 @@ def unevaluable_finding(candidates, ts: float) -> Finding:
     Deliberately NOT severity-graded down to nothing: a run that cannot see what the agent executed
     is a weaker run, and the number belongs next to the CONFIRMED count rather than in a debug log.
     """
-    pids = sorted(c.event.pid for c in candidates if c.event.pid is not None)
+    pids = sorted({c.event.pid for c in candidates if c.event.pid is not None})
     comms = sorted({c.event.comm for c in candidates if c.event.comm})
     fid = _make_id(DETECTOR_UNEVALUABLE, ts, tuple(pids))
     summary = (
