@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from agentwatch import canon_emit, runtimes
+from agentwatch.contract import PlaneTrust
 from agentwatch.detectors.agent_flag import read_entries
 from agentwatch.detectors.lan_reach import detect_lan_reach
 from agentwatch.detectors.self_mod import (
@@ -31,6 +32,7 @@ from agentwatch.findings import (
     orphan_finding,
     parse_health_finding,
     self_mod_finding,
+    stamp_plane_trust,
     unevaluable_finding,
 )
 from agentwatch.groundtruth import audit_log, journald
@@ -62,6 +64,13 @@ class Config:
     # gate, and the RuntimeScope tuning together, because getting any one of them wrong fails
     # quietly (see agentwatch/runtimes.py). Defaults to Claude, which is what this was hardcoded to.
     runtime: str = runtimes.CLAUDE.name
+    # Substrate trust tier of the ground-truth plane (CONTRACT.md §4). OPERATOR-DECLARED: a parser
+    # cannot infer whether its audit log came from a VM kernel OUTSIDE the agent's container
+    # (UNFORGEABLE) or a host shared with it (HOST_SHARED). None = undeclared, the honest default -
+    # ground-truth findings then carry no trust claim rather than a false one. Set to
+    # PlaneTrust.UNFORGEABLE when the audit plane is the VM-kernel auditd of a container-in-VM
+    # substrate (see ../cagetheagent/phase1a/PROOF.md).
+    plane_trust: Optional[PlaneTrust] = None
 
 
 def _merge_parse_stats(all_stats: List[ParseStats]) -> ParseStats:
@@ -197,6 +206,12 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
 
     if emit_verdicts and verdict_contracts:
         canon_emit.VerdictsStore(config.verdicts_path).append_new(verdict_contracts)
+
+    # Stamp the declared ground-truth substrate tier onto ground-truth-derived findings (CONTRACT.md
+    # §4). Done here, after id computation, so dedup identity is independent of the declared tier.
+    findings = stamp_plane_trust(
+        findings, config.plane_trust.value if config.plane_trust else None
+    )
 
     store = FindingsStore(config.findings_path)
     return store.append_new(findings)

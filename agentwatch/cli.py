@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
+from agentwatch.contract import PlaneTrust
 from agentwatch.notifier import notify
 from agentwatch.run import Config, run_once
 
@@ -48,6 +49,13 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Orphan-reconciler correlation window, seconds (default: 15).")
     p.add_argument("--watch", action="store_true", help="Poll continuously instead of running once.")
     p.add_argument("--interval", type=float, default=30.0, help="Poll interval in seconds, with --watch.")
+    p.add_argument(
+        "--plane-trust", default=None,
+        choices=[t.value for t in PlaneTrust],
+        help="Declared substrate trust tier of the ground-truth plane (CONTRACT.md §4): "
+             "'unforgeable' (VM-kernel auditd outside the agent's container), 'host_shared', or "
+             "'self_reported'. Operator-declared - a parser can't infer it. Omit = no trust claim.",
+    )
     return p
 
 
@@ -67,6 +75,8 @@ def _config_from_args(args: argparse.Namespace) -> Config:
     )
     if args.window is not None:
         kwargs["window_seconds"] = args.window
+    if args.plane_trust is not None:
+        kwargs["plane_trust"] = PlaneTrust(args.plane_trust)
     return Config(**kwargs)
 
 
