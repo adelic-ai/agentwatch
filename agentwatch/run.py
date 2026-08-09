@@ -31,6 +31,7 @@ from agentwatch.findings import (
     orphan_finding,
     parse_health_finding,
     self_mod_finding,
+    unevaluable_finding,
 )
 from agentwatch.groundtruth import audit_log, journald
 from agentwatch.reconciler.divergence import reconcile_divergence
@@ -139,6 +140,7 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
     emit_verdicts = config.emit_canon_verdicts and canon_emit.CANON_AVAILABLE
     verdict_contracts: List[dict] = []
 
+    unevaluable: List = []
     for candidate in reconcile_orphans_scoped(
         ground_truth_events,
         transcript_events,
@@ -158,6 +160,14 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
                         window_seconds=config.window_seconds,
                     ).to_contract()
                 )
+        elif candidate.verdict == Verdict.UNEVALUABLE:
+            unevaluable.append(candidate)
+
+    # UNEVALUABLE is a coverage defect, not agent behaviour, and deliberately NOT a canon verdict
+    # (CONTRACT §6 / DECISIONS.md G24): reported once as an aggregate finding, never counted as
+    # coverage and never sent to canon_emit above.
+    if unevaluable:
+        findings.append(unevaluable_finding(unevaluable, ts=now))
 
     for candidate in reconcile_divergence(transcript_events):
         if candidate.is_divergent:

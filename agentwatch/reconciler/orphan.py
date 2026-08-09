@@ -164,4 +164,51 @@ def reconcile_orphans_scoped(
             verdict = Verdict.NONE
             reason = "transcript parse degraded - downgraded from CONFIRMED (see parse_health.py)"
         results.append(replace(c, verdict=verdict, reason=reason))
+    results.extend(unevaluable_candidates(all_gt, agent_uid, scope, tree))
     return results
+
+
+def unevaluable_candidates(
+    ground_truth_events: Iterable[GroundTruthEvent],
+    agent_uid: int,
+    scope: RuntimeScope,
+    tree: ProcessTree,
+) -> list[OrphanCandidate]:
+    """Agent-uid execs that scoping DROPPED because their ancestry is unknowable, not noise.
+
+    Without this they are skipped by `reconcile_orphans`'s `scope_check` and appear nowhere: not
+    matched, not CONFIRMED, not a suppressed candidate. A run then reports a clean CONFIRMED count
+    while the command the agent actually executed was never examined - which is precisely what the
+    shell-out capture did (DECISIONS.md G23: the `wc` behind a forked subshell).
+
+    They are emitted as `Verdict.UNEVALUABLE` with `is_orphan=False`, because they are not orphans:
+    the reconciler never asked whether a tool_use authorized them, so calling them unmatched would
+    be a claim it has not earned. `matched_pid`/`matched_tool_use` stay None for the same reason.
+
+    This does not fix the coverage hole - the fix is recording `fork`/`clone` so ancestry is
+    complete (NEEDS-HUMAN G-NH7). It makes the hole visible, which is a different and lesser thing,
+    and the reporting must not imply otherwise. On this build clone IS captured (see events.py
+    CLONE), so `in_scope` already bridges most forked parents and this set is the residual the
+    bridge still cannot place - not the whole fork gap.
+    """
+    out: list[OrphanCandidate] = []
+    for ev in ground_truth_events:
+        if ev.kind != EXEC or ev.pid is None or ev.uid != agent_uid:
+            continue
+        if not scope.is_unevaluable(ev.pid, ev.ts):
+            continue
+        out.append(
+            OrphanCandidate(
+                event=ev,
+                ancestry_checked=tuple(tree.ancestry(ev.pid)),
+                is_orphan=False,
+                verdict=Verdict.UNEVALUABLE,
+                reason=(
+                    f"ancestry breaks at pid={tree.ppid(ev.pid)}, which has no exec record - the "
+                    "audit plane records execve only, so a parent that forked without exec'ing is "
+                    "invisible and this process cannot be placed in or out of the agent's session. "
+                    "NOT evaluated: no verdict either way (NEEDS-HUMAN G-NH7)"
+                ),
+            )
+        )
+    return out

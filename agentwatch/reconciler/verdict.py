@@ -16,6 +16,16 @@ The three verdicts, in canon's semantics as described by the design doc:
   GAP       - an entailed counterpart is absent while its channel *is* collected (the "it
               happened, we didn't record it" case).
 
+And one this build added, which is NOT part of canon's vocabulary and is deliberately marked as
+local (DECISIONS.md G24):
+
+  UNEVALUABLE - the reconciler could not form an opinion at all, because the ground-truth plane
+                did not give it enough to work with. Distinct from NONE in the way that matters:
+                NONE says "the self-report plane structurally cannot see this, so its silence
+                proves nothing" - a *conclusion*. UNEVALUABLE says "I did not look", which is not
+                a conclusion and must never be counted as one. Its whole purpose is to stop a
+                clean CONFIRMED count from implying coverage it does not have.
+
 v2's orphan reconciler concretely produces CONFIRMED and NONE (see
 `reconciler/runtime_scope.py:RuntimeScope.classify_unmatched` and the parse-health downgrade in
 `reconciler/orphan.py:reconcile_orphans_scoped`). GAP is defined here for vocabulary completeness
@@ -34,3 +44,4 @@ class Verdict(enum.Enum):
     CONFIRMED = "CONFIRMED"
     GAP = "GAP"
     NONE = "NONE"
+    UNEVALUABLE = "UNEVALUABLE"
