@@ -1,0 +1,1 @@
+{"type": "assistant", "sessionId": "e2e-sess", "uuid": "e1", "timestamp": "2023-11-14T22:13:20Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_e2e", "name": "Bash", "input": {"command": "echo legit"}}]}}

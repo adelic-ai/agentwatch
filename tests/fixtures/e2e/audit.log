@@ -1,0 +1,6 @@
+type=SYSCALL msg=audit(1700000000.500:1): arch=c000003e syscall=59 success=yes exit=0 ppid=1 pid=700 uid=3000 gid=3000 comm="bash" exe="/bin/bash" key="exec"ARCH=x86_64 SYSCALL=execve AUID="agent" UID="agent"
+type=EXECVE msg=audit(1700000000.500:1): argc=3 a0="/bin/bash" a1="-c" a2="echo legit"
+type=CWD msg=audit(1700000000.500:1): cwd="/home/agent"
+type=SYSCALL msg=audit(1700005000.000:2): arch=c000003e syscall=59 success=yes exit=0 ppid=1 pid=800 uid=3000 gid=3000 comm="nc" exe="/usr/bin/nc" key="exec"ARCH=x86_64 SYSCALL=execve AUID="agent" UID="agent"
+type=EXECVE msg=audit(1700005000.000:2): argc=3 a0="nc" a1="-e" a2="/bin/sh"
+type=CWD msg=audit(1700005000.000:2): cwd="/home/agent"

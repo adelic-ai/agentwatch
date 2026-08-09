@@ -1,0 +1,21 @@
+# runtime artifacts
+verdicts.jsonl
+findings.jsonl
+*.state.json
+state.json
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# private acceptance dataset (kept out of the repo — see README)
+tests/fixtures/acceptance/

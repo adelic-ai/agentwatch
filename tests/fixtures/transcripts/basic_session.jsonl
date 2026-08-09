@@ -1,0 +1,11 @@
+{"type": "mode", "mode": "normal", "sessionId": "sess-1"}
+{"type": "permission-mode", "permissionMode": "bypassPermissions", "sessionId": "sess-1"}
+{"type": "assistant", "sessionId": "sess-1", "uuid": "u1", "parentUuid": "u0", "timestamp": "2026-07-31T21:51:36.100Z", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "I should list the directory first.", "signature": "sig"}]}}
+{"type": "assistant", "sessionId": "sess-1", "uuid": "u2", "parentUuid": "u1", "timestamp": "2026-07-31T21:51:36.152Z", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls -la"}, "caller": {"type": "direct"}}]}}
+{"type": "user", "sessionId": "sess-1", "uuid": "u3", "parentUuid": "u2", "timestamp": "2026-07-31T21:51:36.238Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "total 0", "is_error": false}]}, "toolUseResult": {"stdout": "total 0", "stderr": "", "interrupted": false}}
+{"type": "assistant", "sessionId": "sess-1", "uuid": "u4", "parentUuid": "u3", "timestamp": "2026-07-31T21:51:37.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "The directory is empty."}]}}
+{"type": "user", "sessionId": "sess-1", "uuid": "u5", "parentUuid": "u4", "timestamp": "2026-07-31T21:51:38.000Z", "message": {"role": "user", "content": "thanks"}}
+this is not json at all
+{"type": "assistant", "sessionId": "sess-1", "uuid": "u6", "timestamp": "not-a-timestamp", "message": {"role": "assistant", "content": [{"type": "text", "text": "unparseable ts"}]}}
+{"type": "file-history-snapshot", "messageId": "m1", "snapshot": {}}
+{"type": "assistant", "sessionId": "sess-1", "uuid": "u7", "parentUuid": "u5", "timestamp": "2026-07-31T21:51:39.000Z", "message": {"role": "assistant", "content": [{"type": "future_block_kind_v99", "somethingNew": true}]}}

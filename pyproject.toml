@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentwatch"
+version = "0.1.0"
+description = "Oversight component for hands-off autonomous coding agents: reconciles the agent's transcript against unforgeable OS audit telemetry and surfaces actions with no authorizing intent. Detective-only."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "adelic-ai" }]
+keywords = ["agent", "oversight", "audit", "reconciliation", "security", "detection"]
+dependencies = []
+
+# canon is an OPTIONAL runtime dependency (guarded import in agentwatch/canon_emit.py).
+# It is a private package resolved from the environment when present; the finding pipeline
+# runs fully without it. Deliberately NOT a pip extra — see CONTRACT.md §6.
+
+[project.scripts]
+agentwatch = "agentwatch.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agentwatch"]
+
+[tool.hatch.build.targets.sdist]
+include = ["agentwatch", "web", "tests", "*.md", "LICENSE"]
