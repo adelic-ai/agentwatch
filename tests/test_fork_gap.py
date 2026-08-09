@@ -10,12 +10,14 @@ These tests prove the fix at each layer and, crucially, reproduce the gap (the s
 is out of scope) when the clone edge is absent.
 """
 import unittest
+from pathlib import Path
 
 from agentwatch.events import CLONE, EXEC, GroundTruthEvent
 from agentwatch.groundtruth.audit_log import parse_lines
 from agentwatch.reconciler.orphan import reconcile_orphans_scoped
 from agentwatch.reconciler.process_tree import ProcessTree
 from agentwatch.reconciler.runtime_scope import RuntimeScope
+from agentwatch.reconciler.verdict import Verdict
 
 AGENT_UID = 1000
 RUNTIME_EXE = "/usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
@@ -148,7 +150,10 @@ class CloneParsingTest(unittest.TestCase):
 
 
 class ForkGapEndToEndTest(unittest.TestCase):
-    """Raw audit.log -> parse -> reconcile: the git work product is evaluated iff clone is captured."""
+    """Raw audit.log -> parse -> reconcile. With clone the git work product is evaluated (a real
+    verdict); without it the bridge cannot place it, but the merged detector no longer drops it
+    silently - it surfaces as UNEVALUABLE. Both mechanisms active: clone-capture shrinks the
+    UNEVALUABLE set, UNEVALUABLE accounts for the residual (DECISIONS.md G23/G24)."""
 
     def _log(self, include_clone: bool) -> str:
         runtime = (
@@ -167,16 +172,59 @@ class ForkGapEndToEndTest(unittest.TestCase):
         )
         return runtime + (clone if include_clone else "") + git
 
-    def test_git_is_evaluated_only_when_clone_is_captured(self) -> None:
-        for include_clone, expect_git in ((True, True), (False, False)):
-            events, _ = parse_lines(self._log(include_clone).splitlines())
-            candidates = reconcile_orphans_scoped(events, [], AGENT_UID)
-            evaluated_pids = {c.event.pid for c in candidates}
-            self.assertEqual(
-                300 in evaluated_pids,
-                expect_git,
-                f"git(300) evaluated should be {expect_git} when include_clone={include_clone}",
+    def test_git_evaluated_with_clone_surfaced_as_unevaluable_without(self) -> None:
+        # With clone captured, the bridge places git(300) in the agent's session, so it gets a
+        # real verdict (CONFIRMED here - no tool_use authorizes the commit). Without clone, the
+        # ancestry hole cannot be bridged; the merged detector surfaces git(300) as UNEVALUABLE
+        # ("I could not look") rather than dropping it - never counted as coverage.
+        with_clone, _ = parse_lines(self._log(True).splitlines())
+        without_clone, _ = parse_lines(self._log(False).splitlines())
+        c_with = {c.event.pid: c for c in reconcile_orphans_scoped(with_clone, [], AGENT_UID)}
+        c_without = {c.event.pid: c for c in reconcile_orphans_scoped(without_clone, [], AGENT_UID)}
+
+        # clone captured -> evaluated with a real verdict, NOT unevaluable
+        self.assertIn(300, c_with)
+        self.assertIn(c_with[300].verdict, (Verdict.CONFIRMED, Verdict.NONE))
+        self.assertNotEqual(c_with[300].verdict, Verdict.UNEVALUABLE)
+
+        # clone absent -> NOT silently dropped; surfaced as UNEVALUABLE, is_orphan False
+        self.assertIn(300, c_without)
+        self.assertEqual(c_without[300].verdict, Verdict.UNEVALUABLE)
+        self.assertFalse(c_without[300].is_orphan)
+
+
+class UnevaluableSurfacingTest(unittest.TestCase):
+    """run_once surfaces an unevaluable exec as ONE aggregate coverage finding, distinct from an
+    orphan and never a canon-eligible CONFIRMED (CONTRACT §6 / DECISIONS.md G24)."""
+
+    def test_unevaluable_surfaces_once_and_not_as_orphan(self) -> None:
+        import tempfile
+
+        from agentwatch.findings import DETECTOR_ORPHAN_SYSCALL, DETECTOR_UNEVALUABLE
+        from agentwatch.run import Config, run_once
+
+        # fork-gap WITHOUT the clone edge: git(300)'s ancestry breaks -> UNEVALUABLE, not dropped.
+        log = ForkGapEndToEndTest()._log(include_clone=False)
+        with tempfile.TemporaryDirectory() as d:
+            dp = Path(d)
+            (dp / "audit.log").write_text(log)
+            findings = run_once(
+                Config(
+                    agent_uid=AGENT_UID,
+                    audit_log_path=dp / "audit.log",
+                    findings_path=dp / "findings.jsonl",
+                    state_path=dp / "state.json",
+                ),
+                now=1000.0,
             )
+        detectors = [f.detector for f in findings]
+        # exactly one aggregate coverage finding, never one-per-exec
+        self.assertEqual(detectors.count(DETECTOR_UNEVALUABLE), 1)
+        # NOT surfaced as an orphan / CONFIRMED - the whole point of a separate verdict
+        self.assertNotIn(DETECTOR_ORPHAN_SYSCALL, detectors)
+        # the coverage finding names the dropped exec
+        u = next(f for f in findings if f.detector == DETECTOR_UNEVALUABLE)
+        self.assertEqual(u.evidence["pids"], [300])
 
 
 if __name__ == "__main__":

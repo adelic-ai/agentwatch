@@ -21,6 +21,10 @@ DETECTOR_SELF_MOD = "self_mod"
 DETECTOR_AGENT_FLAG = "agent_flag"
 DETECTOR_LETHAL_TRIFECTA = "lethal_trifecta"  # stub only in v1 - see reconciler/trifecta.py
 DETECTOR_PARSE_HEALTH = "parse_health"  # v2, design doc v2 §4 - see reconciler/parse_health.py
+# A COVERAGE finding, not a behaviour one: execs the reconciler could not evaluate at all. Kept
+# separate from orphan_syscall on purpose - conflating "I looked and this is unexplained" with "I
+# could not look" is exactly what DECISIONS.md G24 exists to stop.
+DETECTOR_UNEVALUABLE = "unevaluable_exec"
 
 
 def _make_id(detector: str, *key_parts: object) -> str:
@@ -122,6 +126,47 @@ def agent_flag_finding(entry, ts: float) -> Finding:
     summary = f"NEEDS-HUMAN.md: {entry.heading}"
     evidence = {"heading": entry.heading, "body": entry.body}
     return Finding(id=fid, detector=DETECTOR_AGENT_FLAG, ts=ts, summary=summary, evidence=evidence)
+
+
+def unevaluable_finding(candidates, ts: float) -> Finding:
+    """ONE aggregate finding for a run's unevaluable execs (DECISIONS.md G24), never one each.
+
+    A per-exec finding would put a coverage defect in the same stream as agent behaviour and, on a
+    run that shells out repeatedly, bury the behaviour findings under it. The failure being
+    reported is a property of the run's ground-truth plane, not of any single process - so it is
+    reported once, with the processes listed as evidence.
+
+    Deliberately NOT severity-graded down to nothing: a run that cannot see what the agent executed
+    is a weaker run, and the number belongs next to the CONFIRMED count rather than in a debug log.
+    """
+    pids = sorted({c.event.pid for c in candidates if c.event.pid is not None})
+    comms = sorted({c.event.comm for c in candidates if c.event.comm})
+    fid = _make_id(DETECTOR_UNEVALUABLE, ts, tuple(pids))
+    summary = (
+        f"{len(candidates)} agent-uid exec(s) could not be evaluated - ancestry breaks at a "
+        f"process that forked without exec'ing ({', '.join(comms) if comms else 'unknown comm'}). "
+        "Neither authorized nor unexplained: not examined."
+    )
+    evidence = {
+        "count": len(candidates),
+        "pids": pids,
+        "comms": comms,
+        "execs": [
+            {
+                "pid": c.event.pid,
+                "ppid": c.event.ppid,
+                "comm": c.event.comm,
+                "exe": c.event.exe,
+                "ts": c.event.ts,
+                "ancestry_checked": list(c.ancestry_checked),
+                "reason": c.reason,
+            }
+            for c in candidates
+        ],
+    }
+    return Finding(
+        id=fid, detector=DETECTOR_UNEVALUABLE, ts=ts, summary=summary, evidence=evidence
+    )
 
 
 def parse_health_finding(health, ts: float) -> Finding:
