@@ -119,3 +119,8 @@ class GroundTruthEvent:
     success: Optional[bool] = None
     source: str = ""  # "audit" | "journald"
     raw: Any = None  # the parsed-but-unnormalized record, for evidence display
+    #: The process's cgroup (the container's cgroup) — the fork-gap-robust membership key from the
+    #: fused evidence model (eBPF/cgroup). It survives fork-without-exec, where the ancestry walk dies.
+    #: None when the source does not provide it (auditd-only today), in which case cgroup-keyed scoping
+    #: is inert and process ancestry is the sole basis (the pre-fusion behavior).
+    cgroup: Optional[str] = None

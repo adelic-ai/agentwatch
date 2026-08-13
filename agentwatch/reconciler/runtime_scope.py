@@ -115,6 +115,10 @@ class RuntimeScope:
         # successful one under the same pid), so argv is accumulated as a set rather than
         # last-write-wins - otherwise a failed probe's empty argv can overwrite the real one.
         self._argv_by_pid: dict[int, set] = {}
+        self._cgroup_by_pid: dict[int, Optional[str]] = {}
+        self._ts_by_pid: dict[int, Optional[float]] = {}
+        agent_exec_pids: set[int] = set()
+        session_cgroup: Optional[str] = None
         runtime_pids: set[int] = set()
         # When the agent runtime first appears. Used only by `is_unevaluable`: an exec that happened
         # BEFORE the runtime's first exec cannot be a descendant of it, whatever its ancestry looks
@@ -136,14 +140,20 @@ class RuntimeScope:
             if ev.success is not False or ev.pid not in self._exe_by_pid:
                 self._exe_by_pid[ev.pid] = ev.exe
                 self._comm_by_pid[ev.pid] = ev.comm
+                self._cgroup_by_pid[ev.pid] = ev.cgroup
             if ev.args:
                 self._argv_by_pid.setdefault(ev.pid, set()).add(tuple(ev.args))
+            if ev.uid == agent_uid:
+                agent_exec_pids.add(ev.pid)
+                self._ts_by_pid[ev.pid] = ev.ts
             if ev.uid == agent_uid and is_runtime_exec(
                 ev.exe, ev.comm, ev.args, runtime_exe_prefixes, runtime_argv_markers
             ):
                 runtime_pids.add(ev.pid)
                 if ev.ts is not None and (runtime_first_ts is None or ev.ts < runtime_first_ts):
                     runtime_first_ts = ev.ts
+                if session_cgroup is None and ev.cgroup is not None:
+                    session_cgroup = ev.cgroup  # the container's cgroup, from the runtime's own exec
 
         self.runtime_pids: frozenset[int] = frozenset(runtime_pids)
         self._runtime_first_ts = runtime_first_ts
@@ -153,10 +163,47 @@ class RuntimeScope:
         # to "I couldn't find what I was looking for" by evaluating nothing.
         self.active: bool = bool(runtime_pids)
 
+        # cgroup-keyed rescue of the fork gap (the fused evidence model — design in warden
+        # CANONICAL-SHAPE.md / CAPTURE-CONSTRAINT.md). An exec whose ancestry is UNKNOWABLE (its
+        # parent has no exec record — the fork-without-exec / host-root-injection case that
+        # `is_unevaluable` handles) but which is in the SESSION's cgroup is, by cgroup membership,
+        # inside the container's session — a signal that survives the broken ancestry walk. Rescue it
+        # to in-scope so it earns a verdict instead of a silent UNEVALUABLE.
+        #
+        # GATED on cgroup data being present (`session_cgroup is not None`): with auditd-only telemetry
+        # there are no cgroups, so this set is empty and ancestry stays the sole basis — the pre-fusion
+        # behavior, so every existing test is unaffected. Deliberately NARROW: the same conditions as
+        # `is_unevaluable` (unknowable parent, not provably older than the runtime), NEVER the
+        # definitively traced-out noise (a known non-runtime parent — the `su - agent` login shell),
+        # so the login/provisioning out-of-scope conclusions stay intact.
+        #
+        # Coarseness (recorded, not hidden): cgroup is one id for the whole container, so this places an
+        # operator/injected exec "in the session" too. Correct for a hands-off workload (container =
+        # session); the interactive case wants a per-session sub-cgroup (REMEDIATION-PLAN Phase 3).
+        self._session_cgroup = session_cgroup
+        rescued: set[int] = set()
+        if session_cgroup is not None:
+            for pid in agent_exec_pids:
+                if pid in runtime_pids or any(p in runtime_pids for p in tree.ancestry(pid)):
+                    continue  # a runtime pid, or already in scope by ancestry
+                ts = self._ts_by_pid.get(pid)
+                if ts is not None and runtime_first_ts is not None and ts < runtime_first_ts:
+                    continue  # provably older than the runtime -> provisioning, not the session
+                parent = tree.ppid(pid)
+                if parent is not None and parent in self._exe_by_pid:
+                    continue  # ancestry is KNOWABLE and traced out -> a conclusion, not rescuable
+                if self._cgroup_by_pid.get(pid) == session_cgroup:
+                    rescued.add(pid)
+        self._cgroup_rescued: frozenset[int] = frozenset(rescued)
+
     def in_scope(self, pid: int) -> bool:
         if not self.active:
             return True
-        return any(p in self.runtime_pids for p in self._tree.ancestry(pid))
+        if any(p in self.runtime_pids for p in self._tree.ancestry(pid)):
+            return True
+        # Fork-gap rescue: cgroup membership places it in the container's session where the broken
+        # ancestry walk cannot. Empty (inert) unless the fused evidence model supplied cgroups.
+        return pid in self._cgroup_rescued
 
     def is_unevaluable(self, pid: int, ts: Optional[float] = None) -> bool:
         """True when this pid is out of scope only because its ancestry is UNKNOWABLE, not because
