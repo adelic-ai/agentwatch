@@ -68,6 +68,7 @@ GEMINI = RuntimeProfile(
     scope_tuning={
         "runtime_exe_prefixes": rs.GEMINI_RUNTIME_EXE_PREFIXES,
         "runtime_argv_markers": rs.GEMINI_RUNTIME_ARGV_MARKERS,
+        "runtime_basenames": rs.GEMINI_RUNTIME_BASENAMES,
         "runtime_internal_names": rs.GEMINI_RUNTIME_INTERNAL_NAMES,
         "runtime_internal_argv": rs.GEMINI_RUNTIME_INTERNAL_ARGV,
     },

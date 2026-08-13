@@ -46,6 +46,14 @@ DEFAULT_RUNTIME_EXE_PREFIXES: frozenset[str] = frozenset({
 # node-based CLIs and only the marker differs - see GEMINI_* below and DECISIONS.md G13.
 DEFAULT_RUNTIME_ARGV_MARKERS: frozenset[str] = frozenset({"claude"})
 
+# The runtime launcher's BASENAME / comm, for the install shape where it is exec'd DIRECTLY rather than
+# as `node …/cli.js`. The npm-global install and the self-contained-binary builds put the launcher at
+# `/usr/bin/claude` (comm `claude`), so neither the node_modules prefix above nor the `node`+argv rule
+# fires. MEASURED on a warden dev home (claude-code 2.1.231): the runtime execs as comm=claude,
+# filename=/usr/bin/claude, with no `node` re-exec at all. Matched on the exe basename OR comm, so it
+# catches `/usr/bin/claude` and a bare `claude` alike. Sibling set: GEMINI_RUNTIME_BASENAMES.
+DEFAULT_RUNTIME_BASENAMES: frozenset[str] = frozenset({"claude"})
+
 # Binaries Claude Code is known to exec *directly* (no intervening shell) for its own operation,
 # never as a delegated tool call - diagnosed from the real 83 false positives: `git` (status/log/
 # remote/config, gathering repo context), `rg` (ripgrep, file search/indexing), and the npm
@@ -75,9 +83,14 @@ def is_runtime_exec(
     args: tuple,
     runtime_exe_prefixes: frozenset[str] = DEFAULT_RUNTIME_EXE_PREFIXES,
     runtime_argv_markers: frozenset[str] = DEFAULT_RUNTIME_ARGV_MARKERS,
+    runtime_basenames: frozenset[str] = DEFAULT_RUNTIME_BASENAMES,
 ) -> bool:
     """Does this exec event's *own* process belong to the agent runtime itself?"""
     if exe and any(exe.startswith(prefix) for prefix in runtime_exe_prefixes):
+        return True
+    # Directly-exec'd launcher (npm-global / self-contained binary): comm/basename IS the runtime,
+    # e.g. `/usr/bin/claude`. Covers the install where there is no `node …/cli.js` to match above.
+    if comm in runtime_basenames or _basename(exe) in runtime_basenames:
         return True
     if comm == "node" and any(
         marker in a for a in args if isinstance(a, str) for marker in runtime_argv_markers
@@ -103,6 +116,7 @@ class RuntimeScope:
         runtime_internal_names: frozenset[str] = DEFAULT_RUNTIME_INTERNAL_NAMES,
         posix_shells: frozenset[str] = DEFAULT_POSIX_SHELLS,
         runtime_argv_markers: frozenset[str] = DEFAULT_RUNTIME_ARGV_MARKERS,
+        runtime_basenames: frozenset[str] = DEFAULT_RUNTIME_BASENAMES,
         runtime_internal_argv: frozenset = frozenset(),
     ) -> None:
         self._tree = tree
@@ -147,7 +161,7 @@ class RuntimeScope:
                 agent_exec_pids.add(ev.pid)
                 self._ts_by_pid[ev.pid] = ev.ts
             if ev.uid == agent_uid and is_runtime_exec(
-                ev.exe, ev.comm, ev.args, runtime_exe_prefixes, runtime_argv_markers
+                ev.exe, ev.comm, ev.args, runtime_exe_prefixes, runtime_argv_markers, runtime_basenames
             ):
                 runtime_pids.add(ev.pid)
                 if ev.ts is not None and (runtime_first_ts is None or ev.ts < runtime_first_ts):
@@ -320,6 +334,11 @@ GEMINI_RUNTIME_EXE_PREFIXES: frozenset[str] = frozenset({
 # `gemini` in a node process's argv means that node process IS the CLI - the direct analog of the
 # `claude` marker, and the reason is_runtime_exec takes the marker as a parameter.
 GEMINI_RUNTIME_ARGV_MARKERS: frozenset[str] = frozenset({"gemini"})
+
+# Direct-exec launcher basename/comm for Gemini CLI, the analog of DEFAULT_RUNTIME_BASENAMES: a
+# `/usr/bin/gemini` install shape (no `node …/gemini.js` visible). Provisional like the rest of the
+# GEMINI_* tuning until measured against a real capture.
+GEMINI_RUNTIME_BASENAMES: frozenset[str] = frozenset({"gemini"})
 
 # The runtime's own exec chain for an npm-installed node CLI: `env` and `node` are the hops, `npm`
 # is the self-update/version check. `rg` is here because Gemini CLI logs a `gemini_cli.ripgrep_
