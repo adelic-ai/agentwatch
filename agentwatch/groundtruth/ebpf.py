@@ -7,9 +7,9 @@ injections that auditd's uid-scoped execve rule misses — WITH the **cgroup** a
 fork-gap-robust membership key the reconciler's cgroup-keyed scoping (`runtime_scope.py`) consumes.
 
 This module is the **parser** (unit-testable, unprivileged) plus the program text and the command to run
-it. Actually *loading* the probe needs `CAP_BPF`/root on a kernel you own — the one piece that must
-validate on real hardware (gembox / a VM-root), never in the unprivileged container. `bpftrace` is a
-runtime dependency (like auditd for `audit_log.py`); this module never imports or spawns it.
+it. Actually *loading* the probe needs `CAP_BPF`/root on a kernel you own (gembox / a VM-root), never in
+the unprivileged container; the program itself is validated there (see `BPFTRACE_PROGRAM`). `bpftrace` is
+a runtime dependency (like auditd for `audit_log.py`); this module never imports or spawns it.
 
 Output contract (`BPFTRACE_PROGRAM`'s printf, TAB-delimited, one event per line):
 
@@ -27,16 +27,27 @@ from typing import Iterable, Optional
 from agentwatch.events import CLONE, EXEC, GroundTruthEvent, ParseStats
 
 # The eBPF program, in bpftrace. `cgroup` is the current process's cgroup id — the key the cgroup rescue
-# needs. The exact field accesses (`curtask->real_parent->tgid`, `str(args->filename)`) rely on BTF and
-# MUST be validated on a real kernel; the parser below is what is unit-tested here.
+# needs. Deliberately STRUCT-FREE: ppid comes from a fork-populated map (`@ppid[child] = parent`, set on
+# sched_process_fork and read at exec), NOT from `curtask->real_parent->tgid`. That walk needs a
+# `struct task_struct` definition, which requires either a bpftrace built with BTF or kernel headers on
+# the host — neither is guaranteed (gembox's bpftrace v0.14.0 reports `btf: no`, and the cast fails with
+# "Unknown struct/union: 'struct task_struct'"). Every access here — `args->child_pid`/`args->parent_pid`,
+# `cgroup`, `str(args->filename)`, the `@ppid` map — is a plain tracepoint field or a bpftrace builtin, so
+# the probe loads with no BTF and no headers. VALIDATED on gembox (bpftrace v0.14.0, kernel 6.5.4): a
+# `sh`-spawned `ls`/`id` correctly carried the shell's pid as ppid via the map. `delete(@ppid[pid])`
+# bounds the map; the fork probe is declared first so the map is populated before any child execs. (No
+# `END`/`clear` block — v0.14 can't attach the END probe on this build; bpftrace's exit-time map dump is
+# harmless, `parse_lines` skips any non-`E`/`F` line.)
 BPFTRACE_PROGRAM = r"""
-tracepoint:sched:sched_process_exec {
-    printf("E\t%llu\t%d\t%d\t%d\t%llu\t%s\t%s\n",
-           nsecs, pid, curtask->real_parent->tgid, uid, cgroup, comm, str(args->filename));
-}
 tracepoint:sched:sched_process_fork {
+    @ppid[args->child_pid] = args->parent_pid;
     printf("F\t%llu\t%d\t%d\t%d\t%llu\t%s\n",
            nsecs, args->child_pid, args->parent_pid, uid, cgroup, comm);
+}
+tracepoint:sched:sched_process_exec {
+    printf("E\t%llu\t%d\t%d\t%d\t%llu\t%s\t%s\n",
+           nsecs, pid, @ppid[pid], uid, cgroup, comm, str(args->filename));
+    delete(@ppid[pid]);
 }
 """
 
