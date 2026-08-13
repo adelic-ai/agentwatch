@@ -71,6 +71,12 @@ class Config:
     # PlaneTrust.UNFORGEABLE when the audit plane is the VM-kernel auditd of a container-in-VM
     # substrate (see ../cagetheagent/phase1a/PROOF.md).
     plane_trust: Optional[PlaneTrust] = None
+    # Pre-captured ground-truth events, FUSED with anything loaded from audit_log_path/journal_path
+    # (additive, not exclusive — the fused evidence model). This is decision B's in-memory path: an
+    # eBPF capture (agentwatch/groundtruth/ebpf_capture.run_capture) hands its events straight to the
+    # same run_once the file planes use, so the eBPF loader=reader path gets no second reconciler and
+    # no lowered honesty bar. None = file planes only (unchanged behavior).
+    ground_truth_events: Optional[List[GroundTruthEvent]] = None
 
 
 def _merge_parse_stats(all_stats: List[ParseStats]) -> ParseStats:
@@ -128,6 +134,10 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
     profile = runtimes.resolve(config.runtime)
     transcript_events, parse_stats = _load_transcript_events(config.transcript_paths, profile)
     ground_truth_events = _load_ground_truth_events(config.audit_log_path, config.journal_path)
+    if config.ground_truth_events:
+        # Fuse pre-captured events (decision B's eBPF path) with the file planes — same stream, same
+        # reconciler, so cgroup-carrying eBPF events adjudicate the fork gap the auditd plane can't.
+        ground_truth_events = ground_truth_events + list(config.ground_truth_events)
 
     findings: List[Finding] = []
 
