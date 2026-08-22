@@ -180,7 +180,7 @@ G23. One decision remains, G-NH7.
 
 ---
 
-## G-NH7 — OPEN, NOT BLOCKING — the ancestry gap, and why it is yours rather than mine
+## G-NH7 — RESOLVED (2026-08-22) — the ancestry gap, closed by decision B's fork-populated map
 
 The half of G23 that is **not** fixed, and the more dangerous half. An exec whose parent forked
 without exec'ing is invisible to `ProcessTree`: `in_scope` is False and `reconcile_orphans` skips it
@@ -206,9 +206,59 @@ A deterministic correlation id would make all of this moot, and the plane half-c
 Closing that gap means the runtime stamping the id into the spawned process's environment — an
 upstream change, not something reconciliation can recover.
 
+— **RESOLVED (2026-08-22, decision B):** the recommended fix landed — `agentwatch/groundtruth/ebpf.py`
+now emits `CLONE` events (from a `sched_process_fork`-populated ppid map, `a4165be`) alongside `EXEC`,
+and `ProcessTree` (`agentwatch/reconciler/process_tree.py`) consumes `CLONE` edges independently of
+`EXEC` records — a process that forks and never execs is no longer invisible to ancestry. This closes
+the hole at the source, as recommended, rather than only making it visible. auditd's own capture
+(`groundtruth/audit_log.py`) gained the matching `clone`/`fork`/`vfork` parsing in the same line of
+work. The correlation-id half (previous paragraph) is unrelated and still open, but no longer load-
+bearing for ancestry.
+
 ---
 
-## G-NH6 — (original request, kept for the record) — run the shell-out capture
+## G-NH8 — OPEN, NOT BLOCKING — standalone `--ebpf`, and how an external orchestrator supplies it
+
+Resuming a design thread paused 2026-08-17 (warden-side memory: `project_agentwatch_privilege_boundary`)
+with a sharper shape, from the user directly (2026-08-22), lightly reorganized here for the record —
+**no code changed, note only.**
+
+**Where the code already is, checked today:** `agentwatch/groundtruth/ebpf_capture.py`'s `run_capture`
+already takes `elevation_prefix` as a plain argument — it does not build its own, and never assumes
+warden. `agentwatch/run.py`'s `Config.ground_truth_events` is an optional field merged with whatever
+`audit_log_path`/`journal_path` loads. Neither of these is warden-specific; warden (`warden/report.py`,
+`reconcile_ebpf_live`) is just the one existing caller, supplying `warden.privilege.elevation_prefix()`
+and feeding the resulting events into `Config`. **There is no `--ebpf` flag on agentwatch's own CLI at
+all yet** — this repo has zero self-contained eBPF capability today; everything eBPF-related is
+library functions an external caller wires together.
+
+**Proposed shape, three pieces:**
+
+1. **A standalone `agentwatch report --ebpf`** (or similar) that builds its *own* default
+   `elevation_prefix` — the same `("sudo", "-n")` shape `warden/privilege.py` already uses, not
+   discovered here, just mirrored — and calls `ebpf_capture.run_capture` itself, so agentwatch is
+   usable with real eBPF ground truth **without** any orchestrator. This is the open half of the
+   2026-08-17 thread: it does not require the reconciler process to run as root, only this one
+   narrow, auditable `sudo -n bpftrace <script>` subprocess call — same privilege-boundary shape as
+   §1's other constraints already committed to (unprivileged reconciler parsing attacker-adjacent
+   transcript input).
+2. **A flag to suppress that self-capture** — `--no-ebpf`/`--external-ground-truth`, name TBD — for
+   the case where a *different* orchestrator (not warden, which never goes through this CLI at all
+   today — it imports the functions directly) wants to supply `ground_truth_events` itself and needs
+   agentwatch's CLI to not also try to load its own probe. Under warden specifically this is moot
+   today (no double-capture risk exists, since warden bypasses the CLI entirely) — it matters if this
+   CLI path itself is ever what an orchestrator shells out to, or for any other integrator.
+3. **Documented instructions** for how an external orchestrator supplies eBPF (or any) ground truth
+   the way warden already does — `run_capture(duration_s, elevation_prefix=<yours>)` →
+   `Config(ground_truth_events=events)` — generalized past "warden specifically." `CONTRACT.md` §1's
+   `GroundTruthAdapter` Protocol is already the right normative home for this (any conformant source
+   plugs in the same way); this is a matter of writing up the `elevation_prefix`-injection pattern as
+   a concrete example a plane implementer can copy, not inventing a new interface.
+
+**Recommendation:** (1) and (3) are independent and low-risk — worth building/writing regardless of
+how (2) resolves. (2) only has a concrete forcing function once something other than warden's direct
+Python-import shape wants to drive this CLI; until then it's speculative and could wait. Not attempted
+here per session scope (note only); go-ahead needed before touching code.
 
 **Real terminal** (sudo needs a TTY):
 
