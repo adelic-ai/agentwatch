@@ -146,6 +146,8 @@ continuously. Batch/poll, not real-time streaming — by design.
 - `--transcript` / `--transcript-glob` — the self-report plane. Claude Code and Gemini CLI adapters
   ship; add a runtime by writing one `TranscriptAdapter`.
 - `--audit-log` / `--journal` — the ground-truth plane (auditd text log; journald DROP-LAN records).
+- `--ebpf` — capture the ground-truth plane itself via bpftrace (`sudo -n`, `--ebpf-duration` seconds),
+  with no external orchestrator required; fuses additively with `--audit-log`/`--journal` if given.
 - `--plane-trust` — declare the substrate tier (see above); omit for no claim.
 
 ## Deployment modes

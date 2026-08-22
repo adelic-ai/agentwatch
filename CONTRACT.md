@@ -68,6 +68,33 @@ class GroundTruthAdapter(Protocol):
   to `UNEVALUABLE` (§3, §Ancestry). Recording clone is the fix for the fork-gap (see the stack's
   `warden` auditd rule + `phase1a/PROOF.md`).
 
+### Supplying Plane B: the `elevation_prefix`-injection pattern
+
+Loading an eBPF probe needs `CAP_BPF`/root, but the reconciler itself must not — an unprivileged
+process parsing attacker-adjacent transcript input is the correct privilege boundary. The reference
+implementation's capture module (`agentwatch/groundtruth/ebpf_capture.py`) resolves this by taking
+the elevation as a plain, caller-supplied argument rather than ever invoking `sudo` (or anything
+privilege-raising) itself:
+
+```python
+from agentwatch.groundtruth.ebpf_capture import run_capture
+
+events, stats = run_capture(
+    duration_s=30,
+    elevation_prefix=("sudo", "-n"),   # or (), if the caller already runs as root
+)
+config = Config(ground_truth_events=events)   # fused additively with any file-plane events
+```
+
+This is a general pattern for any orchestrator supplying Plane B, not something specific to one
+caller: the component that decides **what** to run (agentwatch) never decides **with what
+privilege**; the privilege decision is made in exactly one place the orchestrator controls and can
+audit, and passed in as data. `warden`, the reference orchestrator, supplies `elevation_prefix` from
+its own `warden/privilege.py` and feeds `run_capture`'s events straight into `Config` this same way.
+An alternative orchestrator plugs in identically — its own audited elevation decision, the same two
+calls. agentwatch's own CLI (`agentwatch --ebpf`) is one such caller: it needs no orchestrator at
+all, and supplies the same `("sudo", "-n")` shape as its own default.
+
 ## 2. The reconciler (component core)
 
 Consumes `(transcript, ground_truth, agent_uid, config)` → yields `Finding`s. The reference impl

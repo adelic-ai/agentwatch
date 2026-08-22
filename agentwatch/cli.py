@@ -10,6 +10,13 @@ findings.jsonl and one quiet human-facing surface").
 
 Add --watch --interval 30 to poll continuously instead of running once. Batch/poll, not real-time
 streaming - explicitly fine per design doc §7's non-goals.
+
+    python3 -m agentwatch.cli --agent-uid 1001 --ebpf --transcript session.jsonl \\
+        --findings findings.jsonl
+
+--ebpf makes this CLI self-contained for real eBPF ground truth (NEEDS-HUMAN.md G-NH8): it captures
+via `groundtruth.ebpf_capture.run_capture` itself, with no external orchestrator (e.g. warden)
+required. See `_DEFAULT_EBPF_ELEVATION_PREFIX` below for the privilege shape.
 """
 from __future__ import annotations
 
@@ -21,8 +28,15 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from agentwatch.contract import PlaneTrust
+from agentwatch.groundtruth import ebpf_capture
 from agentwatch.notifier import notify
 from agentwatch.run import Config, run_once
+
+#: The elevation this CLI supplies to `ebpf_capture.run_capture` for `--ebpf`. Mirrors the shape
+#: `warden/privilege.py` already uses for the same probe (non-interactive, fails rather than
+#: prompting) - not discovered here, just matched, so a standalone run and a warden-orchestrated run
+#: ask the OS for the same narrow thing: `sudo -n bpftrace <script>`, one auditable subprocess call.
+_DEFAULT_EBPF_ELEVATION_PREFIX = ("sudo", "-n")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -56,6 +70,16 @@ def _build_parser() -> argparse.ArgumentParser:
              "'unforgeable' (VM-kernel auditd outside the agent's container), 'host_shared', or "
              "'self_reported'. Operator-declared - a parser can't infer it. Omit = no trust claim.",
     )
+    p.add_argument(
+        "--ebpf", action="store_true",
+        help="Capture real eBPF ground truth (CLONE+EXEC via bpftrace) before reconciling, with no "
+             "external orchestrator needed. Runs `sudo -n bpftrace ...` for --ebpf-duration seconds; "
+             "fused additively with --audit-log/--journal if those are also given.",
+    )
+    p.add_argument(
+        "--ebpf-duration", type=int, default=ebpf_capture.DEFAULT_CAPTURE_SECONDS,
+        help=f"Capture window in seconds for --ebpf (default: {ebpf_capture.DEFAULT_CAPTURE_SECONDS}).",
+    )
     return p
 
 
@@ -80,15 +104,42 @@ def _config_from_args(args: argparse.Namespace) -> Config:
     return Config(**kwargs)
 
 
+def _run_ebpf_pass(config: Config, args: argparse.Namespace) -> Optional[int]:
+    """Capture one --ebpf window into `config` in place. Returns an exit code on failure (the
+    caller should return it immediately), or None on success (a fresh capture is now attached).
+
+    Run per-pass, not once before the loop: under --watch each poll wants ITS OWN window, not one
+    stale capture replayed on every iteration.
+    """
+    try:
+        events, _stats = ebpf_capture.run_capture(
+            duration_s=args.ebpf_duration,
+            elevation_prefix=_DEFAULT_EBPF_ELEVATION_PREFIX,
+        )
+    except ebpf_capture.EbpfCaptureError as exc:
+        print(f"[agentwatch] --ebpf capture failed: {exc}", file=sys.stderr)
+        return 1
+    config.ground_truth_events = events
+    return None
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
     config = _config_from_args(args)
 
     if args.watch:
         while True:
+            if args.ebpf:
+                rc = _run_ebpf_pass(config, args)
+                if rc is not None:
+                    return rc
             notify(run_once(config), stream=sys.stderr)
             time.sleep(args.interval)
     else:
+        if args.ebpf:
+            rc = _run_ebpf_pass(config, args)
+            if rc is not None:
+                return rc
         notify(run_once(config), stream=sys.stderr)
     return 0
 

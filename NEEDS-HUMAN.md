@@ -217,7 +217,7 @@ bearing for ancestry.
 
 ---
 
-## G-NH8 — OPEN, NOT BLOCKING — standalone `--ebpf`, and how an external orchestrator supplies it
+## G-NH8 — PARTIALLY RESOLVED (2026-08-22) — standalone `--ebpf` built; part (2) still open
 
 Resuming a design thread paused 2026-08-17 (warden-side memory: `project_agentwatch_privilege_boundary`)
 with a sharper shape, from the user directly (2026-08-22), lightly reorganized here for the record —
@@ -259,6 +259,16 @@ library functions an external caller wires together.
 how (2) resolves. (2) only has a concrete forcing function once something other than warden's direct
 Python-import shape wants to drive this CLI; until then it's speculative and could wait. Not attempted
 here per session scope (note only); go-ahead needed before touching code.
+
+— **DONE (2026-08-22), (1) and (3):** built as recommended, on go-ahead.
+`agentwatch --ebpf [--ebpf-duration N]` (`agentwatch/cli.py`) now self-captures — `_DEFAULT_EBPF_ELEVATION_PREFIX
+= ("sudo", "-n")` mirrors `warden/privilege.py`'s shape, one auditable subprocess call, re-run fresh
+each poll under `--watch` (not one stale window replayed). `EbpfCaptureError` is caught and reported
+to stderr with exit 1, not a traceback. 6 new tests in `tests/test_cli_ebpf.py` (196 total, all
+passing). `CONTRACT.md` §1 gained a "Supplying Plane B: the `elevation_prefix`-injection pattern"
+subsection generalizing the pattern past warden specifically, with agentwatch's own `--ebpf` cited as
+one caller among others. (2) — a suppression flag for a different orchestrator driving this same CLI
+— remains open; still no forcing function.
 
 **Real terminal** (sudo needs a TTY):
 
