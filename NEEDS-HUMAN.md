@@ -270,6 +270,40 @@ subsection generalizing the pattern past warden specifically, with agentwatch's 
 one caller among others. (2) — a suppression flag for a different orchestrator driving this same CLI
 — remains open; still no forcing function.
 
+— **VALIDATED FOR REAL (2026-08-23), on gembox, and it surfaced a genuine gap in the (1) shape above.**
+`--ebpf` had only ever been tested against a mocked `subprocess.run`. Running it for real against
+gembox's actual sudoers (`sudo -n bpftrace -e ...` NOPASSWD, added ad hoc during the earlier `a4165be`
+validation) failed immediately: `capture_argv`'s `sudo -n timeout <N> bpftrace -e <program>` shape
+doesn't match a sudoers grant scoped to bare `bpftrace` — the command sudo evaluates is `timeout`, not
+`bpftrace`, so it demands a password. The earlier "validated on gembox" claim in `a4165be` almost
+certainly bypassed `timeout` entirely; this is the first time the actual `capture_argv` shape ran
+against real `sudo`.
+
+Broadening the sudoers grant to bare `timeout` was rejected — `sudo -n timeout 1 /bin/bash` is a root
+shell, an unrelated escalation. Fix, in two parts:
+
+1. **`capture_command` override** (`ebpf_capture.capture_argv`/`run_capture`) and **`--ebpf-command`**
+   (CLI) — lets a caller substitute the whole `timeout .. bpftrace -e <program>` shape with a
+   different fixed command, same seam as `elevation_prefix` but for *what runs* instead of *with what
+   privilege*. Default (omitted) behavior unchanged. 4 new tests, 200 total, all passing.
+2. **A root-owned wrapper script**, generated verbatim from `ebpf.BPFTRACE_PROGRAM` (no hand
+   transcription — built by a script asserting byte-identity with the constant), deployed to
+   `/usr/local/sbin/agentwatch-ebpf-capture.sh` on gembox, taking only a digit-validated duration
+   argument and no caller-supplied bpftrace script. Also surfaced, while doing this: the existing bare
+   `NOPASSWD: bpftrace` grant (`/etc/sudoers.d/warden-bpftrace` — not `agentwatch-bpftrace`, an earlier
+   guess at the filename that was wrong) was **already root-shell-equivalent** before any of this —
+   `bpftrace -e` accepts arbitrary code, including a `system()` call in a `BEGIN` block. Removed that
+   grant and replaced it with `NOPASSWD: /usr/local/sbin/agentwatch-ebpf-capture.sh *`, scoped to the
+   fixed wrapper only. This is a genuine tightening of gembox's sudo policy, not merely a workaround —
+   worth knowing if anything else on that box was relying on the old bare grant (nothing found to be,
+   but not exhaustively checked).
+
+**End-to-end proof:** `agentwatch --ebpf --ebpf-command /usr/local/sbin/agentwatch-ebpf-capture.sh`
+run for real, with a `/bin/true` exec triggered mid-window as the `gembox` uid — captured via the real
+probe (`evidence.source: "ebpf"` in the finding, not a mock), reconciled with no authorizing transcript,
+surfaced as `CONFIRMED`. First real proof this path works outside a unit-test mock. (2) is still open;
+unaffected by this.
+
 **Real terminal** (sudo needs a TTY):
 
 ```
