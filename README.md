@@ -226,7 +226,7 @@ agentwatch/
     verdict.py           CONFIRMED / GAP / NONE / UNEVALUABLE
     divergence.py        stated-vs-actual tool divergence
     parse_health.py      transcript-parse reliability gating
-  detectors/             lan_reach, self_mod, agent_flag, trifecta (stub)
+  detectors/             lan_reach, self_mod, agent_flag, instructions_loaded, trifecta (stub)
   findings.py            the Finding model + append-with-dedup store + plane_trust stamping
   run.py                 run_once(config) — the batch orchestration core
   cli.py                 the agentwatch command

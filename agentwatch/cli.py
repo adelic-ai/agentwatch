@@ -57,6 +57,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audit-log", default=None, help="Path to audit.log (ground-truth plane).")
     p.add_argument("--journal", default=None, help="Path to journal.jsonl (ground-truth plane).")
     p.add_argument("--needs-human", default=None, help="Path to the work repo's NEEDS-HUMAN.md.")
+    p.add_argument(
+        "--instructions-loaded", default=None,
+        help="Path to a COPY of the Claude Code InstructionsLoaded hook log "
+             "(warden's /root/.instructions-loaded.jsonl, already pulled out of the container). "
+             "Any event in it is a finding - see detectors/instructions_loaded.py.",
+    )
     p.add_argument("--findings", default="findings.jsonl", help="Output findings.jsonl path.")
     p.add_argument("--state", default="agentwatch_state.json",
                     help="Persisted detector state (currently: the self-mod baseline).")
@@ -104,6 +110,9 @@ def _config_from_args(args: argparse.Namespace) -> Config:
         audit_log_path=Path(args.audit_log).expanduser() if args.audit_log else None,
         journal_path=Path(args.journal).expanduser() if args.journal else None,
         needs_human_path=Path(args.needs_human).expanduser() if args.needs_human else None,
+        instructions_loaded_path=(
+            Path(args.instructions_loaded).expanduser() if args.instructions_loaded else None
+        ),
         findings_path=Path(args.findings).expanduser(),
         state_path=Path(args.state).expanduser(),
     )

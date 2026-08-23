@@ -15,6 +15,7 @@ from typing import Iterable, List, Optional
 from agentwatch import canon_emit, runtimes
 from agentwatch.contract import PlaneTrust
 from agentwatch.detectors.agent_flag import read_entries
+from agentwatch.detectors.instructions_loaded import read_events as read_instructions_loaded
 from agentwatch.detectors.lan_reach import detect_lan_reach
 from agentwatch.detectors.self_mod import (
     DEFAULT_WATCHED_PATHS,
@@ -28,6 +29,7 @@ from agentwatch.findings import (
     FindingsStore,
     agent_flag_finding,
     divergence_finding,
+    instructions_loaded_finding,
     lan_reach_finding,
     orphan_finding,
     parse_health_finding,
@@ -50,6 +52,12 @@ class Config:
     audit_log_path: Optional[Path] = None
     journal_path: Optional[Path] = None
     needs_human_path: Optional[Path] = None
+    # The InstructionsLoaded hook's log, ALREADY COPIED OUT of the agent's container by the caller
+    # (warden's `report --live` pulls it beside the transcript). agentwatch never reaches into a
+    # container: every plane it reads is a path on the machine it runs on, and this is no different.
+    # None = not collected (a non-Claude runtime, or a caller that does not wire the hook) - the
+    # detector then contributes nothing rather than guessing. See detectors/instructions_loaded.py.
+    instructions_loaded_path: Optional[Path] = None
     findings_path: Path = Path("findings.jsonl")
     state_path: Path = Path("agentwatch_state.json")
     window_seconds: float = DEFAULT_WINDOW_SECONDS
@@ -211,6 +219,15 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
     if config.needs_human_path:
         for entry in read_entries(config.needs_human_path):
             findings.append(agent_flag_finding(entry, ts=now))
+
+    # Tripwire, not a filter: every event in this log is a finding, because a correctly-configured
+    # container produces none at all. No windowing - the payload carries no timestamp, and the
+    # condition it evidences (an instruction file that loads) persists in a long-lived home until
+    # someone fixes it, so ageing an event out would silently retire a live defect. Dedup by
+    # verbatim line is what keeps re-polling quiet.
+    if config.instructions_loaded_path:
+        for event in read_instructions_loaded(config.instructions_loaded_path):
+            findings.append(instructions_loaded_finding(event, ts=now))
 
     findings.extend(detect_lethal_trifecta(transcript_events))  # always [] in v1 - see DECISIONS.md
 
