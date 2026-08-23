@@ -1065,3 +1065,75 @@ warden now names the unevaluated execs by `comm` in its own report; agentwatch h
 surface, and `reconcile_orphans_scoped` returning only *evaluated* candidates is the reason. A
 future `scoped_out` companion (pids the scope check rejected, with the pid where the ancestry chain
 broke) would let any consumer say this without re-deriving the process tree — noted, not built.
+
+## G26: the instructions-loaded tripwire is agent_flag's shape, not lan_reach's — and it is not ground truth
+
+warden's D35 wired a Claude Code `InstructionsLoaded` hook that appends every instruction-load
+event to a log inside the container, and made `warden verify` fail on any content in it. The
+premise it rests on is warden's, measured on real substrate (warden DECISIONS.md D33/D35): the
+managed tier's `claudeMdExcludes` blocks every legitimate *file*-based instruction load, and
+warden's own rules arrive as a `claudeMd` **string**, which is not a file load and never fires the
+hook. So a correctly-configured container produces **zero** events, and any event at all is the
+anomaly. This entry is the agentwatch half: the same signal as a first-class detector in the
+findings stream, so warden's continuous path (`report --live`) surfaces it, not only its
+point-in-time `verify`.
+
+**Which existing detector this is modelled on, and why the obvious answer was the wrong one.**
+Semantically it is `lan_reach`: any occurrence is itself the finding, no threshold, no baseline,
+no diff. Structurally it is `agent_flag`: the input is a file some process wrote inside the agent's
+own privilege domain, parsed by this detector rather than arriving as a `GroundTruthEvent`; the
+finding's evidence is the verbatim line; and its id is a hash of that line, so re-reading a growing
+append-only log on every poll is safe. Copying `lan_reach`'s structure would have meant inventing a
+`GroundTruthEvent` kind for it — and that is the mistake, not a shortcut: `lan_reach` reads a
+kernel's own record and inherits the ground-truth plane's substrate tier, and this does not.
+
+**Not in `GROUND_TRUTH_DETECTORS`, deliberately.** The hook process that writes the log runs as
+container-root — the same privilege as the agent it watches. "Claude Code's own authoritative
+record" is a claim about *provenance*, not about *custody*: an agent that can write anywhere in its
+container can truncate this file, and `allowManagedHooksOnly` stops it registering its own hooks,
+not touching a log on its own filesystem. Stamping `PlaneTrust.UNFORGEABLE` (the tier warden's
+container-in-VM auditd plane earns) would be exactly the false claim the frozenset's own comment
+exists to prevent. The honest consequence, stated in the detector's docstring rather than left for
+a reader to work out: **a finding here is high-signal, and silence here proves nothing.** An agent
+has no reason to write incriminating lines about itself, so an event that IS present is close to
+self-authenticating; an event that is absent may never have happened or may have been deleted.
+That asymmetry is what a tripwire is, and it is why this one is layered on top of warden's
+always-on `verify` ring rather than replacing it.
+
+**No windowing, and the reason is not just "dedup handles it."** Two independent reasons. First,
+the payload carries no timestamp (confirmed against the event warden captured for real on gembox:
+`hook_event_name`, `file_path`, `memory_type`, `load_reason`, `session_id`, `transcript_path` — no
+time field), and warden's hook is a bare `cat >>`, so there is nothing to window *on* except the
+file's mtime, which is a property of the file rather than of any event in it. Second, and more
+important: the condition an event evidences is **state, not an incident**. A `dev` home is
+long-lived; an instruction file that loaded three sessions ago still loads today unless someone
+changed the configuration. Ageing it out of an accountable window would silently retire a defect
+that is still live — the "reports success without measuring" shape warden's whole verify/report
+posture exists to refuse. Dedup by verbatim line is what makes the un-windowed read *quiet* on
+re-poll; it is not the reason the window is absent.
+
+Accepted cost of hashing the raw line: two byte-identical events collapse to one finding. Since
+`session_id` differs per session, this only merges duplicate loads *within* one session, and the
+claim being made is "an instruction file loaded at all", not "it loaded N times". `agent_flag` has
+had the identical property since v1.
+
+**Input path: a local file, pulled by the caller.** The log lives at
+`/root/.instructions-loaded.jsonl` *inside* an Incus container, and agentwatch has no container
+access and must not grow any — every plane it reads is a path on the machine it runs on
+(`transcript_paths`, `audit_log_path`, `journal_path`, `needs_human_path`). So `Config` gains
+`instructions_loaded_path`, and warden pulls the file out beside the transcript it already pulls.
+`None` means "not collected" and the detector contributes nothing — which is also the correct
+no-op for a Gemini home, where the whole mechanism (Claude Code managed-settings hooks) does not
+exist. Rejected: teaching agentwatch to `file_pull` (couples the oversight component to one
+substrate), and smuggling the log through `transcript_paths` (a different format that would
+pollute the transcript adapter's parse-health stats — a coverage signal, corrupted to save a
+config field).
+
+A line that is not valid JSON is still an event (`parsed=False`, `raw` surfaced verbatim). The
+claim is "something wrote to this log"; a garbled write is no less a write, and a tripwire that
+drops what it cannot parse is blind to precisely the novel case.
+
+**Validated at unit level only.** `tests/test_instructions_loaded.py` pins the parse, the identity
+scheme, the trust tier, and the `run_once` wiring against a fixture shaped after the real event
+warden captured on gembox. No live Claude Code client fired a hook into this code path here — that
+confirmation belongs to warden's side of the arc and is called out as unvalidated in its D36.
