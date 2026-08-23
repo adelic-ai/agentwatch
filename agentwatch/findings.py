@@ -19,6 +19,7 @@ DETECTOR_DIVERGENCE = "divergence"
 DETECTOR_LAN_REACH = "lan_reach"
 DETECTOR_SELF_MOD = "self_mod"
 DETECTOR_AGENT_FLAG = "agent_flag"
+DETECTOR_INSTRUCTIONS_LOADED = "instructions_loaded"  # warden D35/D36 - see detectors/instructions_loaded.py
 DETECTOR_LETHAL_TRIFECTA = "lethal_trifecta"  # stub only in v1 - see reconciler/trifecta.py
 DETECTOR_PARSE_HEALTH = "parse_health"  # v2, design doc v2 §4 - see reconciler/parse_health.py
 # A COVERAGE finding, not a behaviour one: execs the reconciler could not evaluate at all. Kept
@@ -31,6 +32,13 @@ DETECTOR_UNEVALUABLE = "unevaluable_exec"
 # (divergence, parse_health) and the filesystem/flag findings (self_mod, agent_flag) are NOT here:
 # the ground-truth plane does not vouch for them, so stamping a trust tier on them would be a false
 # claim. lethal_trifecta is a transcript-plane stub -> excluded.
+#
+# instructions_loaded is NOT here either, and the call is deliberate rather than incidental: its
+# evidence is a log written by a Claude Code hook process running as container-root - the SAME
+# privilege as the agent it watches. "The client's own authoritative record" is a statement about
+# provenance, not about custody: an agent that can write anywhere in its container can truncate this
+# file. Stamping it UNFORGEABLE would claim the plane sits outside the agent's reach, which is
+# exactly the false claim this frozenset exists to prevent (warden DECISIONS.md D36).
 GROUND_TRUTH_DETECTORS = frozenset({
     DETECTOR_ORPHAN_SYSCALL,
     DETECTOR_LAN_REACH,
@@ -162,6 +170,40 @@ def agent_flag_finding(entry, ts: float) -> Finding:
     summary = f"NEEDS-HUMAN.md: {entry.heading}"
     evidence = {"heading": entry.heading, "body": entry.body}
     return Finding(id=fid, detector=DETECTOR_AGENT_FLAG, ts=ts, summary=summary, evidence=evidence)
+
+
+def instructions_loaded_finding(event, ts: float) -> Finding:
+    """One finding per logged `InstructionsLoaded` event (warden D35/D36).
+
+    `ts` is the *detection* time and is deliberately NOT part of the id - the payload carries no
+    timestamp of its own, so the only stable identity available is the verbatim line, exactly as
+    with `agent_flag_finding`. That is what makes re-reading the same append-only log on every poll
+    safe. Two byte-identical events collapse to one finding as a consequence; accepted, because the
+    claim this detector makes is "an instruction file loaded at all", not "it loaded N times".
+    """
+    fid = _make_id(DETECTOR_INSTRUCTIONS_LOADED, event.raw)
+    what = event.file_path or ("unparseable event line" if not event.parsed else "unnamed file")
+    summary = (
+        f"instruction file loaded despite claudeMdExcludes: {what} - the managed-tier exclusion "
+        "was bypassed, or an unlisted load path exists"
+    )
+    evidence = {
+        "file_path": event.file_path,
+        "memory_type": event.memory_type,
+        "load_reason": event.load_reason,
+        "parsed": event.parsed,
+        # Verbatim, like agent_flag's: the evidence IS the message, and a tripwire that summarises
+        # away the field it did not think to parse is a tripwire that hides the novel case.
+        "raw_event": event.raw,
+    }
+    return Finding(
+        id=fid,
+        detector=DETECTOR_INSTRUCTIONS_LOADED,
+        ts=ts,
+        summary=summary,
+        evidence=evidence,
+        session_id=event.session_id,
+    )
 
 
 def unevaluable_finding(candidates, ts: float) -> Finding:
