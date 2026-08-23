@@ -339,3 +339,26 @@ result; the point of writing it down first is that it cannot become a story asse
 **Not attempted:** step 5's network plane (squid `access.log` as a second ground-truth source).
 Explicitly out of scope for v1, and now the most valuable remaining work — for a runtime whose
 self-report plane cannot describe *what* a tool did, egress records carry proportionally more.
+
+## G-NH9 — RESOLVED (2026-08-23) — the `instructions_loaded` detector confirmed against a real hook firing, not just the fixture
+
+G26's own limits section left this open: the detector was unit-tested only, against a fixture shaped
+from a real gembox capture — no live Claude Code hook had actually fired through this code path
+here. That confirmation happened, same day, in a warden-side session (`warden/DECISIONS.md` D37) —
+recorded here too since nothing in this repo pointed back to it, and an agentwatch-only session has
+no way to discover a warden-side entry on its own.
+
+**What was confirmed, against this repo's actual `feat/instructions-loaded-detector` code (now
+merged to `main` at `c94ea4b`), on a real Incus 7.3 `dev` instance on gembox:** clean baseline —
+`warden report --live` showed zero events, no `instructions_loaded` finding. Real anomaly —
+`claudeMdExcludes` cleared, `/root/CLAUDE.md` planted, a real authenticated `claude -p` session
+actually loading it (the hook fired for real) — produced a real `Finding` via this detector, with
+`plane_trust: null` (confirming the "not ground truth" call in G26 held for real, not just in
+reasoning) and the verbatim hook payload as evidence. Re-running `report --live` against the same
+run directory a second time did not duplicate the finding — the `Finding.id`-hashes-the-verbatim-
+line dedup design (G26) holds against the real reconciler, not just the unit test's direct calls.
+
+**Not re-verified here, and not necessary to:** this was warden driving the real container and
+calling this repo's code as a library, the same shape D36/D37 describe on the warden side. Nothing
+in this repo's own code changed as a result — this entry exists so the confirmation is discoverable
+from either repo, not just the one that happened to run it.
