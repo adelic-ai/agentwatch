@@ -31,7 +31,9 @@ class EbpfFlag(unittest.TestCase):
                 "--state", str(Path(tmp) / "state.json"),
             ])
         self.assertEqual(rc, 0)
-        run_capture.assert_called_once_with(duration_s=DEFAULT_CAPTURE_SECONDS, elevation_prefix=("sudo", "-n"))
+        run_capture.assert_called_once_with(
+            duration_s=DEFAULT_CAPTURE_SECONDS, elevation_prefix=("sudo", "-n"), capture_command=None
+        )
 
     def test_ebpf_duration_flag_is_threaded_through(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch(
@@ -42,7 +44,27 @@ class EbpfFlag(unittest.TestCase):
                 "--findings", str(Path(tmp) / "findings.jsonl"),
                 "--state", str(Path(tmp) / "state.json"),
             ])
-        run_capture.assert_called_once_with(duration_s=5, elevation_prefix=("sudo", "-n"))
+        run_capture.assert_called_once_with(
+            duration_s=5, elevation_prefix=("sudo", "-n"), capture_command=None
+        )
+
+    def test_ebpf_command_flag_overrides_the_generic_shape(self) -> None:
+        # A pre-deployed wrapper script (CONTRACT.md's elevation_prefix pattern, extended to `what
+        # runs`) must reach run_capture as a shell-split argv, not a raw string.
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "agentwatch.cli.ebpf_capture.run_capture", return_value=([], None)
+        ) as run_capture:
+            cli.main([
+                "--agent-uid", str(AGENT_UID), "--ebpf",
+                "--ebpf-command", "/usr/local/sbin/agentwatch-ebpf-capture.sh",
+                "--findings", str(Path(tmp) / "findings.jsonl"),
+                "--state", str(Path(tmp) / "state.json"),
+            ])
+        run_capture.assert_called_once_with(
+            duration_s=DEFAULT_CAPTURE_SECONDS,
+            elevation_prefix=("sudo", "-n"),
+            capture_command=["/usr/local/sbin/agentwatch-ebpf-capture.sh"],
+        )
 
     def test_captured_events_reach_the_reconciler(self) -> None:
         # A fork-gap-style pair (child ppid points at a process with no exec of its own) that would

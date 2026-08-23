@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import glob as globmod
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -80,6 +81,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ebpf-duration", type=int, default=ebpf_capture.DEFAULT_CAPTURE_SECONDS,
         help=f"Capture window in seconds for --ebpf (default: {ebpf_capture.DEFAULT_CAPTURE_SECONDS}).",
     )
+    p.add_argument(
+        "--ebpf-command", default=None,
+        help="Override the elevated command --ebpf runs (default: the generic "
+             "'timeout <duration> bpftrace -e <program>' shape). Point this at a pre-deployed, "
+             "root-owned wrapper script when sudoers is scoped to a fixed command rather than bare "
+             "bpftrace/timeout - a bare bpftrace grant is root-shell-equivalent (-e accepts "
+             "arbitrary code), a wrapper baking in the program text is not. Shell-split; "
+             "--ebpf-duration is appended as the command's last argument.",
+    )
     return p
 
 
@@ -111,10 +121,12 @@ def _run_ebpf_pass(config: Config, args: argparse.Namespace) -> Optional[int]:
     Run per-pass, not once before the loop: under --watch each poll wants ITS OWN window, not one
     stale capture replayed on every iteration.
     """
+    capture_command = shlex.split(args.ebpf_command) if args.ebpf_command else None
     try:
         events, _stats = ebpf_capture.run_capture(
             duration_s=args.ebpf_duration,
             elevation_prefix=_DEFAULT_EBPF_ELEVATION_PREFIX,
+            capture_command=capture_command,
         )
     except ebpf_capture.EbpfCaptureError as exc:
         print(f"[agentwatch] --ebpf capture failed: {exc}", file=sys.stderr)

@@ -35,12 +35,44 @@ class CaptureArgv(unittest.TestCase):
         self.assertEqual(argv[:4], ["sudo", "-n", "timeout", "30"])
         self.assertEqual(argv[4:6], ["bpftrace", "-e"])
 
+    def test_capture_command_override_replaces_the_generic_shape(self) -> None:
+        # A pre-deployed wrapper script substitutes for `timeout ... bpftrace -e <program>` wholesale
+        # - the point being a sudoers grant can be scoped to the wrapper's fixed path, not to bare
+        # bpftrace (which is root-shell-equivalent via -e's arbitrary code).
+        argv = ebpf_capture.capture_argv(
+            elevation_prefix=("sudo", "-n"),
+            duration_s=8,
+            capture_command=("/usr/local/sbin/agentwatch-ebpf-capture.sh",),
+        )
+        self.assertEqual(argv, ["sudo", "-n", "/usr/local/sbin/agentwatch-ebpf-capture.sh", "8"])
+
+    def test_capture_command_without_duration_appends_nothing(self) -> None:
+        argv = ebpf_capture.capture_argv(capture_command=("/usr/local/sbin/wrapper.sh",))
+        self.assertEqual(argv, ["/usr/local/sbin/wrapper.sh"])
+
     def test_no_sudo_is_injected_by_this_module(self) -> None:
         # Privilege is the caller's decision; with no prefix supplied there must be no sudo anywhere.
         self.assertNotIn("sudo", ebpf_capture.capture_argv(duration_s=5))
 
 
 class RunCapture(unittest.TestCase):
+    def test_capture_command_reaches_the_subprocess_argv(self) -> None:
+        seen = {}
+
+        def _run(argv, capture_output=True, text=True):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(argv, 124, stdout="", stderr="")
+
+        ebpf_capture.run_capture(
+            duration_s=8,
+            elevation_prefix=("sudo", "-n"),
+            capture_command=("/usr/local/sbin/agentwatch-ebpf-capture.sh",),
+            _run=_run,
+        )
+        self.assertEqual(
+            seen["argv"], ["sudo", "-n", "/usr/local/sbin/agentwatch-ebpf-capture.sh", "8"]
+        )
+
     def test_timeout_rc124_is_a_normal_capture_not_an_error(self) -> None:
         # `timeout` kills bpftrace at the window end -> rc 124. Events collected up to then are the run.
         runtime = f"E\t100000000000\t1000\t1\t{AGENT_UID}\t{CG}\tnode\t{RUNTIME_EXE}"
