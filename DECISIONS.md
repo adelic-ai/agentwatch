@@ -1137,3 +1137,42 @@ drops what it cannot parse is blind to precisely the novel case.
 scheme, the trust tier, and the `run_once` wiring against a fixture shaped after the real event
 warden captured on gembox. No live Claude Code client fired a hook into this code path here — that
 confirmation belongs to warden's side of the arc and is called out as unvalidated in its D36.
+
+## G27: G25's `scoped_out` companion, built — and it isn't the same shape UNEVALUABLE is
+
+`RuntimeScope.exclusion_reason` (`reconciler/runtime_scope.py`) and `scoped_out_events`
+(`reconciler/orphan.py`) close the gap G25 named: `reconcile_orphans`'s `scope_check` silently
+drops a pid `RuntimeScope.in_scope` rejects, so it produces no `OrphanCandidate` at all -
+`test_provisioning_noise_outside_the_session_produces_no_candidate_at_all` pins that this is still
+true, deliberately unchanged. `scoped_out_events` takes an already-built `RuntimeScope` (the same
+shape `unevaluable_candidates` takes) and names every agent-uid exec that check rejected, with why.
+
+**Two conclusions, not one, and the reason split matters:** `exclusion_reason` returns a string
+only for a pid whose exclusion is a *conclusion* - provably older than the runtime, or ancestry
+that's fully knowable (the first-hop test `is_unevaluable` already uses) and traces to a pid that
+never attaches to the runtime (the outermost ancestor that still has its own exec record, not
+necessarily the last pid in the chain - `ancestry` can run past it to a pid that was only ever seen
+as someone's `ppid` value and has no identity of its own to report, measured while writing the
+`su - agent` test). It returns `None` for a pid `is_unevaluable` already claims - that category is
+ambiguous, not a conclusion, and re-deriving a second, competing answer for the same pid would be
+worse than not answering, so `exclusion_reason` re-checks and defers rather than trusting a caller
+to check the order itself.
+
+**Deliberately not wired into `run_once` or `findings.jsonl`.** Re-reading G25's own framing while
+building this exposed the assumption underneath it: it treated "no candidate for a scoped-out pid"
+as the same class of problem `unevaluable_finding` reports. It is not. `UNEVALUABLE` means the
+reconciler *couldn't* look - a coverage defect, worth alarming on once per run. Landing in
+`scoped_out_events` means scoping *did* look and correctly concluded "not the session" - the
+mechanism working as designed, not a defect. Every `git`/`rg`/`npm` exec the runtime spawns
+directly and every login/provisioning shell would produce one of these on a normal run; wiring that
+into findings.jsonl as even one aggregate finding per run would fire on the ordinary case and break
+"quiet by default... reports exceptions, not activity" (README.md). So this stays a library-level
+function - "any consumer" (G25's own phrase) can call it directly, the same way `unevaluable_
+candidates` was already callable before `run_once` chose to aggregate it into a finding; nothing
+here forces that same choice for `scoped_out_events`, and nothing currently makes it.
+
+Tested in `tests/test_runtime_scope.py` (`ExclusionReasonTest`) and `tests/test_orphan_verdict.py`
+(`ScopedOutEventsTest`) - the before-runtime and traced-origin reasons individually, that an
+`is_unevaluable` pid is never also claimed here, and that the fixture from the existing "no
+candidate at all" test is now nameable via this function without changing what
+`reconcile_orphans_scoped` itself returns.
