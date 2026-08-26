@@ -5,7 +5,9 @@ module - see tests/test_acceptance_fixtures.py for the real-telemetry run.
 import unittest
 
 from agentwatch.events import EXEC, GroundTruthEvent, NormalizedEvent, TOOL_USE
-from agentwatch.reconciler.orphan import reconcile_orphans_scoped
+from agentwatch.reconciler.orphan import reconcile_orphans_scoped, scoped_out_events
+from agentwatch.reconciler.process_tree import ProcessTree
+from agentwatch.reconciler.runtime_scope import RuntimeScope
 from agentwatch.reconciler.verdict import Verdict
 
 AGENT_UID = 1000
@@ -109,6 +111,42 @@ class ReconcileOrphansScopedTest(unittest.TestCase):
         r = by_pid(results)[500]
         self.assertTrue(r.is_orphan)
         self.assertEqual(r.verdict, Verdict.CONFIRMED)
+
+
+class ScopedOutEventsTest(unittest.TestCase):
+    """`scoped_out_events` - DECISIONS.md G25's companion filling the gap the previous test
+    (`test_provisioning_noise_outside_the_session_produces_no_candidate_at_all`) names: those pids
+    produce no `OrphanCandidate` at all, so nothing about them is auditable without this."""
+
+    def test_names_every_pid_the_scope_check_silently_dropped(self) -> None:
+        ground_truth = [
+            gt(pid=1, ppid=0, uid=AGENT_UID, exe=RUNTIME_EXE, comm="claude", ts=1000.0),
+            gt(pid=50, ppid=99, uid=AGENT_UID, exe="/bin/bash", comm="bash", ts=1.0),
+            gt(pid=51, ppid=50, uid=AGENT_UID, exe="/usr/bin/ssh-keygen", comm="ssh-keygen", ts=1.1),
+        ]
+        results = reconcile_orphans_scoped(ground_truth, [], agent_uid=AGENT_UID, window_seconds=WINDOW)
+        self.assertNotIn(50, by_pid(results))  # still true - unchanged reconciler behavior
+
+        tree = ProcessTree(ground_truth)
+        scope = RuntimeScope(ground_truth, AGENT_UID, tree)
+        out = {e.event.pid: e for e in scoped_out_events(ground_truth, AGENT_UID, scope)}
+        self.assertIn(50, out)
+        self.assertIn(51, out)
+        self.assertIn("before the agent runtime started", out[50].reason)
+
+    def test_evaluated_and_unevaluable_pids_are_not_also_scoped_out(self) -> None:
+        """No double-reporting: a pid that got a real verdict, or landed in UNEVALUABLE, must not
+        also show up here."""
+        ground_truth = [
+            gt(pid=1, ppid=0, uid=AGENT_UID, exe=RUNTIME_EXE, comm="claude", ts=1000.0),
+            gt(pid=2, ppid=1, uid=AGENT_UID, exe="/usr/bin/nc", comm="nc", ts=1005.0),
+            gt(pid=600813, ppid=600812, uid=AGENT_UID, exe="/usr/bin/wc", comm="wc", ts=1006.0),
+        ]
+        tree = ProcessTree(ground_truth)
+        scope = RuntimeScope(ground_truth, AGENT_UID, tree)
+        out_pids = {e.event.pid for e in scoped_out_events(ground_truth, AGENT_UID, scope)}
+        self.assertNotIn(2, out_pids)  # evaluated -> CONFIRMED, per the earlier test in this file
+        self.assertNotIn(600813, out_pids)  # unevaluable, not scoped out - a different category
 
 
 if __name__ == "__main__":

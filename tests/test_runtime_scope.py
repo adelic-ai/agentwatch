@@ -148,6 +148,71 @@ class ClassifyUnmatchedTest(unittest.TestCase):
         self.assertEqual(verdict, Verdict.CONFIRMED)
 
 
+class ExclusionReasonTest(unittest.TestCase):
+    """`RuntimeScope.exclusion_reason` - DECISIONS.md G25's `scoped_out` companion. Only has
+    something to say for a pid that is out of scope for a CONCLUSIVE reason, not an ambiguous one
+    (`is_unevaluable` owns that case and this method must defer to it)."""
+
+    def test_in_scope_pid_has_no_exclusion_reason(self) -> None:
+        events = [
+            gt(pid=100, ppid=1, uid=AGENT_UID, exe=RUNTIME_EXE, comm="claude", ts=1000.0),
+            gt(pid=101, ppid=100, uid=AGENT_UID, exe="/bin/bash", comm="bash", ts=1001.0),
+        ]
+        s = scope(events)
+        self.assertIsNone(s.exclusion_reason(101, ts=1001.0))
+
+    def test_before_runtime_started_is_the_reason_even_when_parent_is_also_unknown(self) -> None:
+        """Same precedence as `is_unevaluable`: a pid provably older than the runtime is
+        provisioning/login noise, not an ambiguous ancestry gap - even when its own parent has no
+        exec record either (ppid=99 here is never itself recorded)."""
+        events = [
+            gt(pid=100, ppid=1, uid=AGENT_UID, exe=RUNTIME_EXE, comm="claude", ts=1000.0),
+            gt(pid=50, ppid=99, uid=AGENT_UID, exe="/bin/bash", comm="bash", ts=1.0),
+        ]
+        s = scope(events)
+        self.assertFalse(s.is_unevaluable(50, ts=1.0))
+        reason = s.exclusion_reason(50, ts=1.0)
+        self.assertIsNotNone(reason)
+        self.assertIn("before the agent runtime started", reason)
+
+    def test_traced_to_a_known_non_runtime_origin_names_that_pid(self) -> None:
+        """The `su - agent` login-shell shape from `is_unevaluable`'s own docstring: the
+        immediate parent DOES have an exec record (so this isn't ambiguous), but the chain never
+        attaches to the runtime pid. Happens after the runtime started, so the ts short-circuit
+        must not be what's classifying it."""
+        events = [
+            gt(pid=100, ppid=1, uid=AGENT_UID, exe=RUNTIME_EXE, comm="claude", ts=1000.0),
+            gt(pid=600769, ppid=1, uid=0, exe="/usr/bin/su", comm="su", ts=1050.0),
+            gt(pid=600771, ppid=600769, uid=AGENT_UID, exe="/bin/bash", comm="bash", ts=1050.5),
+        ]
+        s = scope(events)
+        self.assertFalse(s.is_unevaluable(600771, ts=1050.5))
+        reason = s.exclusion_reason(600771, ts=1050.5)
+        self.assertIsNotNone(reason)
+        self.assertIn("pid=600769", reason)
+        self.assertIn("su", reason)
+
+    def test_unevaluable_pid_has_no_exclusion_reason(self) -> None:
+        """The complement: an ambiguous pid (fork-without-exec, `is_unevaluable` True) must defer
+        to that category rather than also being claimed here - the two are mutually exclusive."""
+        events = [
+            gt(pid=100, ppid=1, uid=AGENT_UID, exe=RUNTIME_EXE, comm="claude", ts=1000.0),
+            gt(pid=600813, ppid=600812, uid=AGENT_UID, exe="/usr/bin/wc", comm="wc", ts=1005.0),
+        ]
+        s = scope(events)
+        self.assertTrue(s.is_unevaluable(600813, ts=1005.0))
+        self.assertIsNone(s.exclusion_reason(600813, ts=1005.0))
+
+    def test_inactive_scope_has_no_exclusion_reason(self) -> None:
+        """Fail-open: no runtime pid found means everything is in scope, so nothing is excluded
+        for any reason at all."""
+        events = [gt(pid=1, ppid=0, uid=AGENT_UID, exe="/usr/sbin/cron", comm="cron")]
+        s = scope(events)
+        self.assertFalse(s.active)
+        self.assertIsNone(s.exclusion_reason(1))
+        self.assertIsNone(s.exclusion_reason(999))
+
+
 if __name__ == "__main__":
     unittest.main()
 
