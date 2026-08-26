@@ -168,6 +168,49 @@ def reconcile_orphans_scoped(
     return results
 
 
+@dataclass(frozen=True)
+class ScopedOutEvent:
+    """One agent-uid exec `RuntimeScope.in_scope` rejected for a reason it can already name - NOT
+    a candidate for orphan evaluation at all, and the complement of `unevaluable_candidates`:
+    those pids WERE candidates whose ancestry just couldn't be judged (ambiguous); these pids'
+    exclusion is a conclusion RuntimeScope already reached (provisioning noise, a login shell),
+    just never previously surfaced anywhere a consumer could read without re-deriving the process
+    tree itself (DECISIONS.md G25 - "any consumer... without re-deriving the process tree").
+
+    Deliberately not a `Finding`: landing here means scoping worked, not that it failed - the
+    opposite of what `unevaluable_finding` reports. Wiring this into findings.jsonl would alarm on
+    the normal, expected case (every runtime-internal exec, every login/provisioning shell) and
+    break "quiet by default, reports exceptions not activity" (README.md). This is a library-level
+    audit-trail surface for a caller that wants one (e.g. a coverage report), not a finding.
+    """
+
+    event: GroundTruthEvent
+    reason: str
+
+
+def scoped_out_events(
+    ground_truth_events: Iterable[GroundTruthEvent],
+    agent_uid: int,
+    scope: RuntimeScope,
+) -> list[ScopedOutEvent]:
+    """Agent-uid execs `scope.in_scope` rejected for a reason `scope.exclusion_reason` can name.
+
+    Takes an already-built `RuntimeScope` (the same shape `unevaluable_candidates` takes) rather
+    than building its own, so a caller that already has one from `reconcile_orphans_scoped`'s own
+    construction - or from calling `RuntimeScope` directly, as any other consumer would - never
+    re-derives the process tree just to get this list.
+    """
+    out: list[ScopedOutEvent] = []
+    for ev in ground_truth_events:
+        if ev.kind != EXEC or ev.pid is None or ev.uid != agent_uid:
+            continue
+        reason = scope.exclusion_reason(ev.pid, ev.ts)
+        if reason is None:
+            continue
+        out.append(ScopedOutEvent(event=ev, reason=reason))
+    return out
+
+
 def unevaluable_candidates(
     ground_truth_events: Iterable[GroundTruthEvent],
     agent_uid: int,

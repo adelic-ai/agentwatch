@@ -268,6 +268,46 @@ class RuntimeScope:
             return True
         return parent not in self._exe_by_pid
 
+    def exclusion_reason(self, pid: int, ts: Optional[float] = None) -> Optional[str]:
+        """Why `in_scope(pid)` is False, for a pid whose exclusion is a CONCLUSION rather than an
+        open question (DECISIONS.md G25's `scoped_out` companion). None when `pid` is in scope,
+        or when it's `is_unevaluable` instead - that one is ambiguous, not a conclusion, and this
+        method re-checks it before answering so it's safe to call standalone.
+
+        Two conclusions, both already implied by `in_scope`/`is_unevaluable` but never previously
+        surfaced as a reason a consumer could read without re-deriving the ancestry walk itself:
+
+        - the exec happened before the runtime's own first exec, so it structurally cannot be a
+          descendant of it (provisioning, login noise - `is_unevaluable`'s `ts` short-circuit,
+          same precedence, so a pid this old is never misreported as ambiguous);
+        - the exec's ancestry IS knowable (the immediate parent has its own exec record - the same
+          first-hop test `is_unevaluable` uses) and traces to a pid that never attaches to the
+          runtime - the `su - agent` login shell that same method's docstring names as the
+          contrasting case to `wc`.
+        """
+        if not self.active or self.in_scope(pid):
+            return None
+        if self.is_unevaluable(pid, ts):
+            return None
+        if (
+            ts is not None
+            and self._runtime_first_ts is not None
+            and ts < self._runtime_first_ts
+        ):
+            return "exec'd before the agent runtime started - provisioning/login noise, not the session"
+        # The outermost ancestor that still has its own exec record - not necessarily the last
+        # element of the chain, which may run past it to a pid that was only ever seen as a ppid
+        # value and has no identity of its own to report.
+        origin = pid
+        for p in self._tree.ancestry(pid):
+            if p in self._exe_by_pid:
+                origin = p
+        origin_comm = self._comm_by_pid.get(origin)
+        return (
+            f"ancestry traced to pid={origin} (comm={origin_comm or 'unknown'}), which never "
+            "attaches to the agent runtime - a known non-runtime origin, not a gap"
+        )
+
     def attachment(self, pid: int) -> Optional[int]:
         """The pid in `pid`'s ancestry (including itself) whose *own* ppid is a runtime pid -
         i.e. where this chain first attaches directly to the agent runtime. None if `pid` never
