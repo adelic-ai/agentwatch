@@ -162,7 +162,7 @@ def _discover_k8s_audit_log_paths(primary_path: Path) -> List[Path]:
     only the live file can silently miss events that happened before a rotation, independent of
     whether rotation has occurred. The API server's default rotator renames the pre-rotation file
     to `<stem>-<RFC3339-ish timestamp><suffix>` alongside a fresh `<stem><suffix>` - confirmed
-    against a real rotated file on pop-os, 2026-08-31 (`audit-2026-08-31T07-41-42.854.log` beside
+    against a real rotated file on devhost, 2026-08-31 (`audit-2026-08-31T07-41-42.854.log` beside
     `audit.log`, which is a 100MB-triggered default rotation, not a bug in that file).
 
     Sorted oldest-first by mtime for legibility (a reader scanning the merged stream sees events

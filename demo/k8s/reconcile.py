@@ -1,6 +1,6 @@
 """Reconcile real K8s ground truth against real Warrant grants (K8S-DESIGN.md §6/§8).
 
-Validated for real, 2026-08-30/31, against a live `kind` cluster + in-cluster warrant on pop-os:
+Validated for real, 2026-08-30/31, against a live `kind` cluster + in-cluster warrant on devhost:
 the authorized ConfigMap read produces no finding; the unauthorized Secret-create produces
 `CONFIRMED` (technique `k8s_scope_violation`). Along the way this run caught a real bug (fixed,
 see agentwatch/adapters/warrant.py's docstring and git history) that all 37 unit tests from the

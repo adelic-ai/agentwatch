@@ -1,6 +1,6 @@
 """K8s audit log rotation-awareness - the same class of gap warden's own D39 already found and
 fixed for auditd (ausearch needing --input-logs to see rotated data too, not just the live file).
-Found for real, 2026-08-31, against a long-running demo cluster on pop-os: the API server's
+Found for real, 2026-08-31, against a long-running demo cluster on devhost: the API server's
 default 100MB rotation had already happened, and a grant's entailed action - logged before the
 rotation - read as GAP even though it genuinely occurred, because `_load_k8s_events` only ever
 read the single active `audit.log`.
