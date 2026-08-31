@@ -56,8 +56,19 @@ class IdentityCorrelator:
     cgroup_to_subject: Mapping[str, str] = field(default_factory=dict)
 
     def subject_for(self, event: GroundTruthEvent) -> Optional[str]:
+        """Username-shape first, cgroup fallback - not an either/or on `event.kind` alone.
+        `k8s_scope.exec_events_as_actions` translates raw eBPF exec events into `K8S_ACTION`-kind
+        copies (K8S-DESIGN.md's process-scoped grant reuse - see that module's docstring) so they
+        reuse this reconciler's matching path; their `comm` is a process name, never a
+        ServiceAccount username, so the regex correctly fails and this must fall through to
+        `cgroup` rather than stopping at `kind == K8S_ACTION` and returning `None`. Safe for every
+        real K8s-audit event too: those never carry a `cgroup` (k8s_audit.py never sets one), so
+        a real event either matches the username regex or falls through to a no-op cgroup lookup -
+        identical final result to before this fallback existed."""
         if event.kind == K8S_ACTION:
-            return subject_from_k8s_username(event.comm)
+            subject = subject_from_k8s_username(event.comm)
+            if subject is not None:
+                return subject
         if event.cgroup is not None:
             return self.cgroup_to_subject.get(event.cgroup)
         return None

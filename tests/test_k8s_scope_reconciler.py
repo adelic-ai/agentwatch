@@ -5,9 +5,9 @@ that fabricated/expanded scope is still caught, not just an unauthorized action 
 import unittest
 
 from agentwatch.adapters.authorization import Decision, GrantEvent
-from agentwatch.events import K8S_ACTION, GroundTruthEvent
+from agentwatch.events import CLONE, EXEC, K8S_ACTION, GroundTruthEvent
 from agentwatch.reconciler.k8s_identity import IdentityCorrelator
-from agentwatch.reconciler.k8s_scope import reconcile_k8s_scope
+from agentwatch.reconciler.k8s_scope import exec_events_as_actions, reconcile_k8s_scope
 from agentwatch.reconciler.verdict import Verdict
 
 SUBJECT = "demo-agent"
@@ -139,6 +139,45 @@ class UnevaluableTest(unittest.TestCase):
         confirmed = [r for r in results if r.verdict == Verdict.CONFIRMED]
         self.assertEqual(len(unevaluable), 1)
         self.assertEqual(confirmed, [])
+
+
+class ExecEventsAsActionsTest(unittest.TestCase):
+    """`exec_events_as_actions` - the translation that lets raw eBPF exec ground truth reuse this
+    reconciler's already-tested matching logic instead of a parallel one (module docstring)."""
+
+    def test_exec_event_becomes_process_scoped_k8s_action(self) -> None:
+        ev = GroundTruthEvent(ts=1.0, kind=EXEC, comm="cat", cgroup="123")
+        [translated] = exec_events_as_actions([ev])
+        self.assertEqual(translated.kind, K8S_ACTION)
+        self.assertEqual(translated.args, ("exec", "process:cat"))
+        self.assertEqual(translated.cgroup, "123")  # identity correlation input preserved
+        self.assertEqual(translated.ts, 1.0)
+
+    def test_clone_events_are_excluded(self) -> None:
+        """A fork alone runs no new binary - nothing to check against a process:<name> grant."""
+        events = [GroundTruthEvent(ts=1.0, kind=CLONE, comm="bash")]
+        self.assertEqual(exec_events_as_actions(events), [])
+
+    def test_exec_with_no_comm_is_skipped_not_defaulted(self) -> None:
+        events = [GroundTruthEvent(ts=1.0, kind=EXEC, comm=None)]
+        self.assertEqual(exec_events_as_actions(events), [])
+
+    def test_translated_exec_reconciles_through_the_same_path_as_a_k8s_action(self) -> None:
+        """End-to-end: an eBPF-observed exec, once translated, is checked exactly like any K8s
+        API action - authorized exec produces nothing, unauthorized exec is CONFIRMED."""
+        grants = [_grant(0.0, "exec", "process:kubectl")]
+        exec_events = [
+            GroundTruthEvent(ts=5.0, kind=EXEC, comm="kubectl", cgroup="c1"),  # authorized
+            GroundTruthEvent(ts=6.0, kind=EXEC, comm="cat", cgroup="c1"),  # never granted
+        ]
+        translated = exec_events_as_actions(exec_events)
+        # identity correlation for these synthetic events comes from cgroup, not username -
+        # comm was overwritten by the translation, so correlate via cgroup_to_subject.
+        correlator = IdentityCorrelator(cgroup_to_subject={"c1": SUBJECT})
+        results = reconcile_k8s_scope(translated, grants, correlator)
+        confirmed = [r for r in results if r.verdict == Verdict.CONFIRMED]
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0].event.args, ("exec", "process:cat"))
 
 
 if __name__ == "__main__":

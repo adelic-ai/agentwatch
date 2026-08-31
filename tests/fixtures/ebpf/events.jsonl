@@ -1,0 +1,3 @@
+{"ts": 1700000000.1, "kind": "clone", "pid": 100, "ppid": 1, "uid": 0, "exe": null, "comm": "bash", "args": [], "success": null, "source": "ebpf", "raw": "F\t...", "cgroup": "c1", "node": "demo-node", "subject_id": "demo-agent"}
+{"ts": 1700000000.2, "kind": "exec", "pid": 100, "ppid": 1, "uid": 0, "exe": "/usr/bin/kubectl", "comm": "kubectl", "args": [], "success": null, "source": "ebpf", "raw": "E\t...", "cgroup": "c1", "node": "demo-node", "subject_id": "demo-agent"}
+{"ts": 1700000000.3, "kind": "exec", "pid": 101, "ppid": 1, "uid": 0, "exe": "/usr/bin/cat", "comm": "cat", "args": [], "success": null, "source": "ebpf", "raw": "E\t...", "cgroup": "c1", "node": "demo-node", "subject_id": "demo-agent"}

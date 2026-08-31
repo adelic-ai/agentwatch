@@ -9,6 +9,7 @@ from agentwatch.adapters.authorization import Decision, GrantEvent
 from agentwatch.run import Config, run_once
 
 FIXTURES = Path(__file__).parent / "fixtures" / "k8s_audit" / "audit.jsonl"
+EBPF_FIXTURES = Path(__file__).parent / "fixtures" / "ebpf" / "events.jsonl"
 AGENT_UID = 3000
 
 
@@ -62,6 +63,55 @@ class RunOnceK8sScopeTest(unittest.TestCase):
         self.assertEqual(flagged_resources, {"secrets:default/leaked-secret", "pods:default/other-pod"})
         self.assertTrue(all(f.evidence["verdict"] == "CONFIRMED" for f in k8s_findings))
         self.assertTrue(all(f.plane_trust is None for f in k8s_findings))  # undeclared by default, honest
+
+    def test_ebpf_only_flags_the_unauthorized_process_exec(self) -> None:
+        """demo/k8s/ebpf/capture_loop.py's JSONL, real fixture shape (subject_id/node included -
+        the loader must drop them, see _load_ebpf_events' docstring). kubectl is granted, cat is
+        not - via exec_events_as_actions's process:<name> reframing, not a second detector."""
+        grants = [
+            GrantEvent(
+                subject_id="demo-agent", action="exec", resource_id="process:kubectl",
+                decision=Decision.PERMIT, ts=0.0,
+            )
+        ]
+        findings = run_once(
+            self._config(
+                ebpf_events_path=EBPF_FIXTURES,
+                warrant_grants=grants,
+                k8s_cgroup_to_subject={"c1": "demo-agent"},
+            ),
+            now=1700000000.0,
+        )
+        k8s_findings = [f for f in findings if f.detector == "k8s_scope_violation"]
+        self.assertEqual(len(k8s_findings), 1)
+        self.assertEqual(k8s_findings[0].evidence["resource_id"], "process:cat")
+
+    def test_k8s_audit_and_ebpf_combine_in_one_reconciliation_pass(self) -> None:
+        """Both ground-truth shapes at once - the K8s-audit violation and the eBPF-exec violation
+        both surface, from the same run_once call, same findings.jsonl."""
+        grants = [
+            GrantEvent(
+                subject_id="demo-agent", action="get", resource_id="configmaps:default/agent-config",
+                decision=Decision.PERMIT, ts=0.0,
+            ),
+            GrantEvent(
+                subject_id="demo-agent", action="exec", resource_id="process:kubectl",
+                decision=Decision.PERMIT, ts=0.0,
+            ),
+        ]
+        findings = run_once(
+            self._config(
+                k8s_audit_path=FIXTURES,
+                ebpf_events_path=EBPF_FIXTURES,
+                warrant_grants=grants,
+                k8s_cgroup_to_subject={"c1": "demo-agent"},
+            ),
+            now=1700000000.0,
+        )
+        k8s_findings = [f for f in findings if f.detector == "k8s_scope_violation"]
+        flagged = {f.evidence["resource_id"] for f in k8s_findings}
+        self.assertIn("process:cat", flagged)  # from eBPF
+        self.assertIn("secrets:default/leaked-secret", flagged)  # from K8s audit
 
     def test_rerun_dedups_the_same_finding(self) -> None:
         grants = [

@@ -7,8 +7,9 @@ points at.
 """
 from __future__ import annotations
 
+import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Iterable, List, Mapping, Optional
 
@@ -43,7 +44,7 @@ from agentwatch.findings import (
 from agentwatch.groundtruth import audit_log, journald, k8s_audit
 from agentwatch.reconciler.divergence import reconcile_divergence
 from agentwatch.reconciler.k8s_identity import IdentityCorrelator
-from agentwatch.reconciler.k8s_scope import reconcile_k8s_scope
+from agentwatch.reconciler.k8s_scope import exec_events_as_actions, reconcile_k8s_scope
 from agentwatch.reconciler.orphan import DEFAULT_WINDOW_SECONDS, reconcile_orphans_scoped
 from agentwatch.reconciler.parse_health import assess_parse_health
 from agentwatch.reconciler.verdict import Verdict
@@ -102,6 +103,12 @@ class Config:
     # k8s_identity.py's IdentityCorrelator). Empty by default - a caller reconciling only K8s-audit
     # events (identity already carried in the event itself) needs no mapping supplied.
     k8s_cgroup_to_subject: Optional[Mapping[str, str]] = None
+    # eBPF DaemonSet output (demo/k8s/ebpf/capture_loop.py's JSONL) - raw EXEC events, translated
+    # via reconciler.k8s_scope.exec_events_as_actions and merged into the same k8s_audit_path
+    # stream before reconciliation, so a process-shaped Warrant grant (action="exec",
+    # resource="process:<name>") is checked through the identical, already-tested matching path
+    # as any K8s API action. None = not collected, same contract as k8s_audit_path.
+    ebpf_events_path: Optional[Path] = None
 
 
 def _merge_parse_stats(all_stats: List[ParseStats]) -> ParseStats:
@@ -159,6 +166,38 @@ def _load_k8s_events(k8s_audit_path: Optional[Path]) -> List[GroundTruthEvent]:
         return []
     with Path(k8s_audit_path).open(encoding="utf-8", errors="replace") as fh:
         events, _stats = k8s_audit.parse_lines(fh)
+    return events
+
+
+def _load_ebpf_events(ebpf_events_path: Optional[Path]) -> List[GroundTruthEvent]:
+    """`demo/k8s/ebpf/capture_loop.py`'s JSONL output -> `GroundTruthEvent`s. Reconstructs only
+    the dataclass's own fields - `subject_id`/`node`, which that script stamps onto each row as
+    extra deployment metadata, are dropped here on purpose: `k8s_cgroup_to_subject` (Config, caller
+    -supplied) is the one contract this reconciler trusts for identity, not a field a JSONL row
+    happens to carry - same "caller decides, this function just consumes" shape as
+    `_load_k8s_events`. A malformed line is skipped, never fatal to the rest of the file."""
+    if not ebpf_events_path or not Path(ebpf_events_path).exists():
+        return []
+    events: List[GroundTruthEvent] = []
+    known_fields = {f.name for f in fields(GroundTruthEvent)}
+    with Path(ebpf_events_path).open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            row = {k: v for k, v in row.items() if k in known_fields}
+            if "args" in row and isinstance(row["args"], list):
+                row["args"] = tuple(row["args"])
+            try:
+                events.append(GroundTruthEvent(**row))
+            except (TypeError, ValueError):
+                continue
     return events
 
 
@@ -237,11 +276,12 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
     for ev in detect_lan_reach(ground_truth_events):
         findings.append(lan_reach_finding(ev))
 
-    # K8S-DESIGN.md §0/§2/§3: the third-plane detector. Contributes nothing when either input is
-    # absent - same "None = not collected" contract as every other optional plane in this Config,
-    # not a special case.
-    if config.k8s_audit_path and config.warrant_grants:
+    # K8S-DESIGN.md §0/§2/§3: the third-plane detector. Contributes nothing when there's no grant
+    # data or no ground truth of either shape - same "None = not collected" contract as every
+    # other optional plane in this Config, not a special case.
+    if (config.k8s_audit_path or config.ebpf_events_path) and config.warrant_grants:
         k8s_events = _load_k8s_events(config.k8s_audit_path)
+        k8s_events += exec_events_as_actions(_load_ebpf_events(config.ebpf_events_path))
         correlator = IdentityCorrelator(cgroup_to_subject=config.k8s_cgroup_to_subject or {})
         k8s_unevaluable: List = []
         for candidate in reconcile_k8s_scope(k8s_events, config.warrant_grants, correlator):

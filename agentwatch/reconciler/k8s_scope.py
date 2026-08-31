@@ -23,16 +23,46 @@ are not guaranteed to be the same strings - the default assumes a demo/deploymen
 grants using the literal K8s verb; a real deployment with a richer action taxonomy would inject its
 own verb->action mapping here, same pattern as `orphan.py`'s `scope_tuning` and
 `adapters/warrant.py`'s `fetch`.
+
+WHY RAW EXEC EVENTS NEED `exec_events_as_actions` FIRST, NOT A SECOND DETECTOR: an eBPF `EXEC`
+event has no (verb, resource_id) pair - it's `exe`/`comm`, a process, not a K8s API call. Warrant
+has no native concept of "may this subject execute this binary" either - its Resource/Delegation
+model is K8s-API-shaped, not process-shaped. Rather than build a parallel matching engine for a
+different candidate shape (real duplication of `_grant_authorizes`/`_grant_forbids`, the actual
+correctness-bearing logic), `exec_events_as_actions` reframes "ran X" as the same K8s-action shape
+this reconciler already checks: verb `"exec"`, resource `f"process:{comm}"`. A Warrant grant then
+looks exactly like any other - e.g. `subject=demo-k8s-agent, action=exec, resource=process:kubectl`
+- and anything that subject execs *without* a matching grant is `CONFIRMED` by the same,
+already-tested `_grant_authorizes`/`_grant_forbids` path, not a new one to trust.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Iterable, List, Optional
 
 from agentwatch.adapters.authorization import Decision, GrantEvent
-from agentwatch.events import K8S_ACTION, GroundTruthEvent
+from agentwatch.events import CLONE, EXEC, K8S_ACTION, GroundTruthEvent
 from agentwatch.reconciler.k8s_identity import IdentityCorrelator
 from agentwatch.reconciler.verdict import Verdict
+
+#: The verb an exec is reframed as, so it matches a Warrant grant of the shape
+#: `action="exec", resource="process:<comm>"` - see module docstring.
+EXEC_VERB = "exec"
+
+
+def exec_events_as_actions(events: Iterable[GroundTruthEvent]) -> List[GroundTruthEvent]:
+    """`EXEC`-kind events (eBPF ground truth) -> `K8S_ACTION`-shaped copies this reconciler can
+    check like any other. `CLONE` (fork-without-exec) is deliberately excluded - a fork alone
+    runs no new binary, there is nothing to check it against a `process:<name>` grant for, and
+    including it would manufacture a `process:<parent's-own-comm>` candidate for every fork, which
+    is noise, not signal. `comm` empty/`None` is skipped (nothing to build a resource_id from),
+    not defaulted to a placeholder that could collide with a real process name."""
+    out: List[GroundTruthEvent] = []
+    for ev in events:
+        if ev.kind != EXEC or not ev.comm:
+            continue
+        out.append(replace(ev, kind=K8S_ACTION, args=(EXEC_VERB, f"process:{ev.comm}")))
+    return out
 
 DEFAULT_ACTION_MATCHES: Callable[[str, str], bool] = lambda verb, action: verb == action
 
