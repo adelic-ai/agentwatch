@@ -19,3 +19,6 @@ dist/
 
 # private acceptance dataset (kept out of the repo — see README)
 tests/fixtures/acceptance/
+
+# working design notes, not a committed spec
+considerations/
