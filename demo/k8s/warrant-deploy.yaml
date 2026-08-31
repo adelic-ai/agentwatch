@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warrant
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: warrant
+  template:
+    metadata:
+      labels:
+        app: warrant
+    spec:
+      containers:
+      - name: warrant
+        image: warrant:k8s-demo
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 2
+          periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warrant
+  namespace: default
+spec:
+  selector:
+    app: warrant
+  ports:
+  - port: 8000
+    targetPort: 8000
