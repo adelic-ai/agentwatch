@@ -197,11 +197,29 @@ not something to stake detection on by itself.
 ## The contract — agentwatch is one implementation, not the interface
 
 A deployment stack should depend on the **oversight contract** ([`CONTRACT.md`](CONTRACT.md)), not on
-agentwatch specifically. The contract fixes: two input planes (a `TranscriptSource` and a
-`GroundTruthParser`), the four-verdict output vocabulary, the trust tiers, and an optional guarantee
-backend. Anything that satisfies it — a SIEM adapter, an identity-platform integration, a different
-detector — is a drop-in replacement. `agentwatch/contract.py` is that surface in code;
-`tests/test_contract.py` is the conformance check. agentwatch is the reference implementation.
+agentwatch specifically. The contract fixes: two required input planes (a `TranscriptSource` and a
+`GroundTruthParser`), an OPTIONAL third (`AuthorizationAdapter` — see Kubernetes extension below),
+the four-verdict output vocabulary, the trust tiers, and an optional guarantee backend. Anything
+that satisfies it — a SIEM adapter, an identity-platform integration, a different detector — is a
+drop-in replacement. `agentwatch/contract.py` is that surface in code; `tests/test_contract.py` is
+the conformance check. agentwatch is the reference implementation.
+
+## Kubernetes extension
+
+An OPTIONAL third input plane, CONTRACT.md §1a: reconcile K8s ground truth (API-server audit log +
+eBPF process capture) against what an authorization engine actually granted, not just what the
+agent claims. Base conformance (Plane A + Plane B) is unaffected — this is additive, not a
+replacement.
+
+- **Design + build order:** [`K8S-DESIGN.md`](K8S-DESIGN.md).
+- **Working demo, validated against a live cluster** (not a simulation — see its README for what
+  that run actually found and fixed along the way): [`demo/k8s/`](demo/k8s/README.md). Real `kind`
+  cluster, real in-cluster `warrant` instance, real eBPF DaemonSet — an authorized action produces
+  no finding, an unauthorized one is `CONFIRMED`, correctly, from two independent ground-truth
+  sources reconciled through one detector.
+- Reference authorization-plane adapter: `agentwatch/adapters/warrant.py`, reading
+  [`warrant`](https://github.com/adelic-ai/warrant)'s `/audit/log` — no changes needed on
+  `warrant`'s side to be conformant.
 
 ## Optional: canon guarantee tiers
 
@@ -217,8 +235,11 @@ deliberately never emitted as a canon verdict.
 agentwatch/
   events.py              the two normalized shapes everything above an adapter reads
   contract.py            the oversight-contract surface (Verdict, PlaneTrust, the two Protocols)
-  adapters/              transcript-plane adapters: claude_code, gemini_cli (+ base interface)
-  groundtruth/           ground-truth parsers: audit_log (auditd), journald (DROP-LAN)
+  adapters/               transcript-plane: claude_code, gemini_cli (+ base interface)
+                          + authorization plane (optional, CONTRACT.md §1a): authorization.py
+                          (the Protocol), warrant.py (reads a live warrant instance)
+  groundtruth/            ground-truth parsers: audit_log (auditd), journald (DROP-LAN),
+                          ebpf(_capture) (bpftrace), k8s_audit (K8s API-server audit log)
   reconciler/
     process_tree.py      pid/ppid tree from exec+clone events (bridges the fork gap)
     runtime_scope.py     session-subtree scoping; is_unevaluable() structural test
@@ -226,12 +247,16 @@ agentwatch/
     verdict.py           CONFIRMED / GAP / NONE / UNEVALUABLE
     divergence.py        stated-vs-actual tool divergence
     parse_health.py      transcript-parse reliability gating
+    k8s_identity.py      cgroup/K8s-username -> warrant subject_id correlation
+    k8s_scope.py         K8s-vs-warrant-grant reconciler; exec_events_as_actions translation
   detectors/             lan_reach, self_mod, agent_flag, instructions_loaded, trifecta (stub)
   findings.py            the Finding model + append-with-dedup store + plane_trust stamping
   run.py                 run_once(config) — the batch orchestration core
   cli.py                 the agentwatch command
   canon_emit.py          optional canon guarantee projection (guarded import)
 web/render_timeline.py   optional static-HTML transcript timeline viewer
+demo/k8s/                K8s extension demo — kind cluster + in-cluster warrant + eBPF DaemonSet,
+                          validated against a live cluster; see K8S-DESIGN.md and its own README
 tests/                   unittest; a private real-telemetry acceptance set is skipped when absent
 ```
 

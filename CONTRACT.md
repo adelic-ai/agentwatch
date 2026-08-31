@@ -1,7 +1,12 @@
-# Oversight-Component Contract (v0.1)
+# Oversight-Component Contract (v0.2)
 
 **Status:** draft, normative. **Audience:** the CageTheAgent deployment stack, agentwatch (reference
 impl), and any alternative oversight provider.
+
+**v0.2 change:** adds §1a, an OPTIONAL third input plane (`AuthorizationAdapter`) for components
+that also reconcile against a declared-authority record, not just declared intent. Additive only —
+a v0.1-conformant component (Plane A + Plane B alone) remains fully conformant under v0.2; nothing
+in §1/§2/§3 changed. See K8S-DESIGN.md §0 for the reasoning.
 
 ## Purpose
 
@@ -12,13 +17,14 @@ or a future detector can fill the same slot by conforming here.
 
 ```
 Deployment stack (CageTheAgent)
-     │ produces two planes                        consumes findings
+     │ produces two planes (+ OPTIONAL third)      consumes findings
      ▼                                                   ▲
  ┌──────────────────── OVERSIGHT CONTRACT ───────────────────┐
- │ IN:  TranscriptAdapter  +  GroundTruthAdapter             │
- │ OUT: Findings{ verdict ∈ CONFIRMED|GAP|NONE|UNEVALUABLE, │
- │               attribution, reason, score }                │
- │      + OPTIONAL canon guarantee tier                      │
+ │ IN:  TranscriptAdapter  +  GroundTruthAdapter              │
+ │      + OPTIONAL AuthorizationAdapter (§1a)                 │
+ │ OUT: Findings{ verdict ∈ CONFIRMED|GAP|NONE|UNEVALUABLE,   │
+ │               attribution, reason, score }                 │
+ │      + OPTIONAL canon guarantee tier                       │
  └───────────────────────────────────────────────────────────┘
      ▲ reference impl                 ▲ alternative impls
   agentwatch (merged whole)      vendor SIEM / Entra-DSC / OTEL-bridge
@@ -95,6 +101,50 @@ An alternative orchestrator plugs in identically — its own audited elevation d
 calls. agentwatch's own CLI (`agentwatch --ebpf`) is one such caller: it needs no orchestrator at
 all, and supplies the same `("sudo", "-n")` shape as its own default.
 
+### §1a. The optional third plane — Authorization (K8S-DESIGN.md §0)
+
+A grant is neither Plane A nor Plane B, and stretching either to fit it would misrepresent it: not
+the agent's self-report (it's an independent policy engine's own decision, never agent-authored),
+and not raw telemetry needing a parser (it's already a structured decision record, e.g. a `warrant`
+`AuditRecord` row). A component MAY additionally consume this plane to check ground truth against
+**declared authority**, not just **declared intent**:
+
+```python
+class AuthorizationAdapter(Protocol):
+    def iter_grants(self) -> Iterable[GrantEvent]: ...
+
+# GrantEvent (normative fields)
+#   subject_id: str        # the agent identity a decision was made about
+#   action: str
+#   resource_id: str
+#   decision: Decision     # PERMIT | REQUIRE_APPROVAL | FORBID
+#   ts: float
+#   raw_ref: Any
+```
+
+- **OPTIONAL.** A component consuming only Plane A + Plane B remains fully conformant (§5) without
+  ever implementing this. Nothing here changes base conformance.
+- A component that DOES consume it MUST reuse the §3 verdict vocabulary for authorization-scope
+  findings rather than invent a parallel one. Reference technique: `AGENT.k8s-scope-violation`
+  (`agentwatch/reconciler/k8s_scope.py`) — `CONFIRMED` for ground truth with no matching PERMIT (or
+  a matching FORBID); `GAP` for a PERMIT whose entailed action never shows up in ground truth;
+  `UNEVALUABLE` when identity correlation to a `subject_id` fails.
+- `REQUIRE_APPROVAL` MUST NOT be treated as authorizing on its own, and its obligation-discharge
+  question MUST NOT be re-reconciled here — that belongs to whichever authorization engine issued
+  the grant (e.g. `warrant`'s own `audit.py:reconcile()` already does this for its domain; see that
+  module's docstring). Duplicating it would be redundant, not a missing feature.
+- **The authorization engine owes this plane nothing new to be conformant with.** The reference
+  adapter (`agentwatch/adapters/warrant.py`) is a pure consumer of `warrant`'s pre-existing
+  `/audit/log` endpoint — no route, schema, or code changed on the authorization-engine side. An
+  authorization engine MUST NOT become an inline enforcement gateway for the ground-truth plane it's
+  being checked against (K8S-DESIGN.md §2) — that collapses the independence this plane exists for,
+  the same self-report problem Plane A vs. Plane B already exists to avoid.
+- Ground-truth events with no natural `(action, resource_id)` shape (e.g. a raw process exec) MAY be
+  translated into one before reconciliation, rather than reconciled by a second matching engine —
+  reference: `reconciler/k8s_scope.py:exec_events_as_actions`, which reframes an exec as
+  `action="exec", resource_id=f"process:{comm}"` so it's checked through the same matching path as
+  any other action.
+
 ## 2. The reconciler (component core)
 
 Consumes `(transcript, ground_truth, agent_uid, config)` → yields `Finding`s. The reference impl
@@ -147,7 +197,8 @@ guarantee on `SELF_REPORTED`.
 
 A component is conformant iff:
 
-1. It consumes Plane A + Plane B via the adapter interfaces.
+1. It consumes Plane A + Plane B via the adapter interfaces. (Plane A′/§1a is OPTIONAL — omitting
+   it never affects conformance.)
 2. It emits `Finding`s using the verdict vocabulary in §3.
 3. **`UNEVALUABLE` is never rolled into `CONFIRMED`/clean/coverage counts.** (anti-completion-theater invariant)
 4. It **fails open, not blind**: if it cannot scope the session (e.g. no runtime pid found), it
@@ -167,5 +218,6 @@ A component MAY project `Finding`s into canon's verdict/provenance/fidelity cont
 
 ## 7. Interface summary (what each side owes)
 
-- **Stack → component:** both plane adapters, `agent_uid`, the session boundary.
+- **Stack → component:** both plane adapters, `agent_uid`, the session boundary, + OPTIONAL an
+  `AuthorizationAdapter` (§1a) if the component consumes one.
 - **Component → stack:** a `Finding` stream (+ optional canon verdicts) to the console / SIEM.
