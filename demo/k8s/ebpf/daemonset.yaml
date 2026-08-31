@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: agentwatch-ebpf-capture
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: agentwatch-ebpf-capture
+  template:
+    metadata:
+      labels:
+        app: agentwatch-ebpf-capture
+    spec:
+      hostPID: true
+      containers:
+      - name: capture
+        image: agentwatch-ebpf:k8s-demo
+        imagePullPolicy: Never
+        securityContext:
+          privileged: true
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: EBPF_WINDOW_SECONDS
+          value: "10"
+        - name: EBPF_OUTPUT_PATH
+          value: /var/log/agentwatch-ebpf/events.jsonl
+        volumeMounts:
+        - name: ebpf-output
+          mountPath: /var/log/agentwatch-ebpf
+        - name: sys-kernel-debug
+          mountPath: /sys/kernel/debug
+      volumes:
+      - name: ebpf-output
+        hostPath:
+          path: /var/log/agentwatch-ebpf
+          type: DirectoryOrCreate
+      - name: sys-kernel-debug
+        hostPath:
+          path: /sys/kernel/debug

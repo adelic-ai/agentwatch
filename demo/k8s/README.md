@@ -56,8 +56,28 @@ that an action can be entirely legal at the K8s layer and still violate the agen
 scope; only reconciling against `warrant`'s independent grant record catches that, which is exactly
 why this detector exists rather than relying on RBAC alone.
 
-## What's not here
+## eBPF DaemonSet (`ebpf/`)
 
-The eBPF DaemonSet (K8S-DESIGN.md §5) — catches agent behavior that never touches the K8s API at
-all (e.g. a shell spawned inside the container), which this audit-log-only pass structurally
-cannot see. Being built next; see `demo/k8s/ebpf/` once it exists.
+Validated for real, 2026-08-31, against the same live cluster: `docker build -t agentwatch-ebpf:k8s-demo -f ebpf/Dockerfile .` (build context is the `agentwatch` repo root), `kind load docker-image`, `kubectl apply -f ebpf/daemonset.yaml`. No changes to the existing
+`groundtruth/ebpf.py`/`ebpf_capture.py` capture logic - this is packaging only (privileged
+container, `hostPID`, `/sys/kernel/debug` mounted, `capture_loop.py` runs `run_capture` on a
+10s window forever, appending cgroup-tagged events as JSONL).
+
+Confirmed it sees what the audit-log-only path structurally can't: a `cat /etc/shadow` run inside
+a throwaway pod's container - zero K8s API footprint, no audit log entry possible - showed up
+correctly with its own cgroup ID within the next capture window.
+
+**Reading the output**: the DaemonSet's hostPath (`/var/log/agentwatch-ebpf/events.jsonl`) is a
+path on the `kind` *node's own container*, not directly on the real host, since
+`kind-config.yaml` doesn't `extraMounts` it out the way it does for the K8s audit log. For now,
+read it via `docker exec <node> cat /var/log/agentwatch-ebpf/events.jsonl` (gembox's `docker`
+group membership makes this root-equivalent, same as the audit-log permission fix earlier). Add
+an `extraMounts` entry to `kind-config.yaml` if a real host-side file path is wanted - not done
+here to avoid recreating the already-configured demo cluster.
+
+**Explicitly not yet built**: the cgroup->subject_id mapping (`reconciler/k8s_identity.py`'s
+`cgroup_to_subject`, injected data per its own docstring - "the thing that actually knows the
+live pod-to-ServiceAccount binding... is not this module's job to rebuild"). This pass proves the
+DaemonSet captures real, correctly cgroup-tagged events; it does not yet wire those events into
+`reconcile.py`'s full identity-correlated detector. Reading K8s pod metadata off
+`/sys/fs/cgroup` at capture time to build that mapping is real, separate work.
