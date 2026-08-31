@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Optional
 
 from agentwatch.adapters.authorization import Decision, GrantEvent
@@ -38,12 +38,24 @@ def real_fetch(url: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> bytes:
 
 
 def _parse_ts(raw: object) -> Optional[float]:
+    """`warrant.models.utcnow()` is always `datetime.now(timezone.utc)` at the source, but
+    `/audit/log`'s JSON serialization drops the offset - the wire string looks naive
+    (`"2026-08-31T02:04:52.784585"`, no `Z`/`+00:00`) even though it's always UTC. `.timestamp()`
+    on a naive datetime assumes the *local* system timezone, not UTC - on any host not running in
+    UTC this silently shifts every grant's epoch by the local offset. Confirmed for real against a
+    live warrant instance on a UTC-4 host: a grant issued before a K8s action computed as issued
+    ~4h *after* it, so `_grant_authorizes`'s `grant.ts <= at_ts` wrongly failed and a legitimately
+    PERMIT-ed action was flagged CONFIRMED. Fix: a tz-naive parse result is UTC, not local -
+    attach it explicitly rather than let `.timestamp()` guess."""
     if not isinstance(raw, str) or not raw:
         return None
     try:
-        return datetime.fromisoformat(raw).timestamp()
+        parsed = datetime.fromisoformat(raw)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _row_to_grant(row: dict) -> Optional[GrantEvent]:

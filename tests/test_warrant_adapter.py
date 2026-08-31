@@ -1,5 +1,6 @@
 import json
 import unittest
+from datetime import datetime, timezone
 
 from agentwatch.adapters.authorization import Decision, GrantEvent
 from agentwatch.adapters.warrant import WarrantGrantAdapter, _row_to_grant
@@ -87,6 +88,22 @@ class RowToGrantTest(unittest.TestCase):
         g = _row_to_grant(_ROWS[0])
         self.assertIsInstance(g, GrantEvent)
         self.assertEqual(g.subject_id, "demo-agent")
+
+    def test_offsetless_timestamp_is_parsed_as_utc_not_local(self) -> None:
+        """Confirmed for real against a live warrant instance (2026-08-31): `/audit/log`'s
+        `timestamp` field is offset-less on the wire even though `warrant.models.utcnow()` is
+        always UTC at the source - on a non-UTC host, naively calling `.timestamp()` on the parsed
+        (tz-naive) datetime silently assumes *local* time, shifting the epoch by the local offset.
+        On that run (UTC-4) this made a grant issued genuinely BEFORE a K8s action compute as
+        issued ~4h AFTER it, so `_grant_authorizes`'s `grant.ts <= at_ts` wrongly failed and a
+        legitimately PERMIT-ed action was flagged CONFIRMED. This pins the fix independent of
+        whatever timezone the test happens to run in."""
+        row = dict(_ROWS[0])
+        row["timestamp"] = "2026-08-31T02:04:52.784585"  # naive on the wire, always UTC in truth
+        g = _row_to_grant(row)
+        self.assertIsInstance(g, GrantEvent)
+        expected = datetime(2026, 8, 31, 2, 4, 52, 784585, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(g.ts, expected)
 
 
 if __name__ == "__main__":
