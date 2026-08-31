@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY agentwatch /opt/agentwatch/agentwatch
 COPY demo/k8s/ebpf/capture_loop.py /opt/agentwatch/capture_loop.py
+COPY demo/k8s/ebpf/pod_lookup.py /opt/agentwatch/pod_lookup.py
 
 WORKDIR /opt/agentwatch
 ENTRYPOINT ["python3", "capture_loop.py"]

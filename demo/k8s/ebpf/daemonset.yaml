@@ -13,6 +13,7 @@ spec:
         app: agentwatch-ebpf-capture
     spec:
       hostPID: true
+      serviceAccountName: agentwatch-ebpf-capture
       containers:
       - name: capture
         image: agentwatch-ebpf:k8s-demo
