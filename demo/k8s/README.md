@@ -4,9 +4,10 @@ Validated for real, 2026-08-30/31, against a live `kind` cluster + in-cluster `w
 host (pop-os). Not a simulation — see `reconcile.py`'s docstring for the real bug this run caught
 that 37 passing unit tests didn't.
 
-Demonstrates K8S-DESIGN.md's core thesis: reconcile what an agent actually did on Kubernetes (the
-real API-server audit log) against what `warrant` actually granted it. `eBPF` is deliberately not
-part of this pass (K8S-DESIGN.md §5/§7) — this validates the audit-log-only path.
+Demonstrates K8S-DESIGN.md's core thesis: reconcile what an agent actually did on Kubernetes
+against what `warrant` actually granted it — from two independent ground-truth sources, the
+K8s API-server audit log and the eBPF DaemonSet's process-execution capture (`ebpf/`), both
+reconciled through the same detector.
 
 ## Run it
 
@@ -75,9 +76,30 @@ group membership makes this root-equivalent, same as the audit-log permission fi
 an `extraMounts` entry to `kind-config.yaml` if a real host-side file path is wanted - not done
 here to avoid recreating the already-configured demo cluster.
 
-**Explicitly not yet built**: the cgroup->subject_id mapping (`reconciler/k8s_identity.py`'s
-`cgroup_to_subject`, injected data per its own docstring - "the thing that actually knows the
-live pod-to-ServiceAccount binding... is not this module's job to rebuild"). This pass proves the
-DaemonSet captures real, correctly cgroup-tagged events; it does not yet wire those events into
-`reconcile.py`'s full identity-correlated detector. Reading K8s pod metadata off
-`/sys/fs/cgroup` at capture time to build that mapping is real, separate work.
+## cgroup->subject_id resolution + wiring into the reconciler (`ebpf/pod_lookup.py`)
+
+Also validated for real, 2026-08-31: `capture_loop.py` now resolves each event's cgroup to a
+Warrant `subject_id` at capture time (`kubectl apply -f ebpf/rbac.yaml` first - the DaemonSet
+needs its own ServiceAccount with `get`/`list` on pods to do this) and stamps it onto the JSONL
+row. Two real hops, no guessing: cgroup v2's numeric id IS the cgroupfs directory's inode (one
+walk of `/sys/fs/cgroup` per window, cached), and the resulting path's embedded pod UID is
+resolved to a ServiceAccount name via the DaemonSet's own in-cluster API credentials.
+
+`reconciler.k8s_scope.exec_events_as_actions` then reframes each raw exec as the same K8s-action
+shape the detector already checks - verb `"exec"`, resource `f"process:{comm}"` - so a Warrant
+grant like `action=exec, resource=process:kubectl` is matched through the *same*
+`_grant_authorizes`/`_grant_forbids` path as any K8s API action, not a parallel one:
+
+```
+python3 reconcile.py --ebpf-events <(docker exec agentwatch-demo-control-plane cat /var/log/agentwatch-ebpf/events.jsonl)
+```
+
+Confirmed for real: every ungranted process exec captured (`id`, `sleep`, `sh`, `mount`, `jq`,
+`cp`) correctly `CONFIRMED`; a PERMIT grant for `exec` on `process:kubectl` produced zero false
+positives against the same data.
+
+**Known, undramatic limitation, recorded rather than fixed today**: `k8s_audit.py` only reads the
+single active `audit.log`, no rotation-awareness. On a long-running cluster the K8s API server
+rotates it (100MB default), and an action logged before rotation reads as a `GAP` even though it
+genuinely happened - the exact class of bug warden's own D39 already found and fixed for `auditd`
+(`ausearch` needing `--input-logs` to see rotated data too, not just the current file).
