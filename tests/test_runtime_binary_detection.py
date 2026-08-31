@@ -12,7 +12,7 @@ from agentwatch.reconciler.orphan import reconcile_orphans_scoped
 from agentwatch.reconciler.runtime_scope import is_runtime_exec
 from agentwatch.reconciler.verdict import Verdict
 
-AGENT_UID = 1065536  # container root -> host uid, measured on gembox warden-dev
+AGENT_UID = 1065536  # container root -> host uid, measured on opuser warden-dev
 CG = "226390"        # the container's .lxc cgroup — shared by claude AND any incus-exec injection
 
 
@@ -24,7 +24,7 @@ class BinaryLauncherDetection(unittest.TestCase):
         self.assertFalse(is_runtime_exec("/bin/sh", "sh", ()))
 
     def test_forkgap_injection_confirmed_with_binary_runtime(self) -> None:
-        # The real gembox shape: claude runtime as /usr/bin/claude, plus a host-root incus-exec injection
+        # The real opuser shape: claude runtime as /usr/bin/claude, plus a host-root incus-exec injection
         # whose parent (4999) has no exec record (the fork gap), both in the container cgroup. With the
         # runtime now detected, session_cgroup self-seeds from it and the injection is rescued -> CONFIRMED.
         runtime = GroundTruthEvent(

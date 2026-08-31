@@ -1,6 +1,6 @@
 """eBPF (bpftrace) ground-truth adapter — the fused-evidence PRODUCER for decision B.
 
-Unit-testable half: the parser. Loading the probe needs real kernel privilege (gembox / VM-root) and is
+Unit-testable half: the parser. Loading the probe needs real kernel privilege (opuser / VM-root) and is
 NOT exercised here. The last test is the money one — the full chain: bpftrace text -> parser ->
 cgroup-labeled GroundTruthEvents -> the reconciler's cgroup-keyed scoping -> the fork gap closes.
 """

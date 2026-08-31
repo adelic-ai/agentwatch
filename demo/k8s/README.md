@@ -1,7 +1,7 @@
 # K8s scope-violation demo
 
 Validated for real, 2026-08-30/31, against a live `kind` cluster + in-cluster `warrant` on a real
-host (pop-os). Not a simulation — see `reconcile.py`'s docstring for the real bug this run caught
+host (devhost). Not a simulation — see `reconcile.py`'s docstring for the real bug this run caught
 that 37 passing unit tests didn't.
 
 Demonstrates K8S-DESIGN.md's core thesis: reconcile what an agent actually did on Kubernetes
@@ -71,7 +71,7 @@ correctly with its own cgroup ID within the next capture window.
 **Reading the output**: the DaemonSet's hostPath (`/var/log/agentwatch-ebpf/events.jsonl`) is a
 path on the `kind` *node's own container*, not directly on the real host, since
 `kind-config.yaml` doesn't `extraMounts` it out the way it does for the K8s audit log. For now,
-read it via `docker exec <node> cat /var/log/agentwatch-ebpf/events.jsonl` (gembox's `docker`
+read it via `docker exec <node> cat /var/log/agentwatch-ebpf/events.jsonl` (opuser's `docker`
 group membership makes this root-equivalent, same as the audit-log permission fix earlier). Add
 an `extraMounts` entry to `kind-config.yaml` if a real host-side file path is wanted - not done
 here to avoid recreating the already-configured demo cluster.

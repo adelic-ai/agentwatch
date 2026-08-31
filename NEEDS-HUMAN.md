@@ -270,12 +270,12 @@ subsection generalizing the pattern past warden specifically, with agentwatch's 
 one caller among others. (2) — a suppression flag for a different orchestrator driving this same CLI
 — remains open; still no forcing function.
 
-— **VALIDATED FOR REAL (2026-08-23), on gembox, and it surfaced a genuine gap in the (1) shape above.**
+— **VALIDATED FOR REAL (2026-08-23), on opuser, and it surfaced a genuine gap in the (1) shape above.**
 `--ebpf` had only ever been tested against a mocked `subprocess.run`. Running it for real against
-gembox's actual sudoers (`sudo -n bpftrace -e ...` NOPASSWD, added ad hoc during the earlier `a4165be`
+opuser's actual sudoers (`sudo -n bpftrace -e ...` NOPASSWD, added ad hoc during the earlier `a4165be`
 validation) failed immediately: `capture_argv`'s `sudo -n timeout <N> bpftrace -e <program>` shape
 doesn't match a sudoers grant scoped to bare `bpftrace` — the command sudo evaluates is `timeout`, not
-`bpftrace`, so it demands a password. The earlier "validated on gembox" claim in `a4165be` almost
+`bpftrace`, so it demands a password. The earlier "validated on opuser" claim in `a4165be` almost
 certainly bypassed `timeout` entirely; this is the first time the actual `capture_argv` shape ran
 against real `sudo`.
 
@@ -288,18 +288,18 @@ shell, an unrelated escalation. Fix, in two parts:
    privilege*. Default (omitted) behavior unchanged. 4 new tests, 200 total, all passing.
 2. **A root-owned wrapper script**, generated verbatim from `ebpf.BPFTRACE_PROGRAM` (no hand
    transcription — built by a script asserting byte-identity with the constant), deployed to
-   `/usr/local/sbin/agentwatch-ebpf-capture.sh` on gembox, taking only a digit-validated duration
+   `/usr/local/sbin/agentwatch-ebpf-capture.sh` on opuser, taking only a digit-validated duration
    argument and no caller-supplied bpftrace script. Also surfaced, while doing this: the existing bare
    `NOPASSWD: bpftrace` grant (`/etc/sudoers.d/warden-bpftrace` — not `agentwatch-bpftrace`, an earlier
    guess at the filename that was wrong) was **already root-shell-equivalent** before any of this —
    `bpftrace -e` accepts arbitrary code, including a `system()` call in a `BEGIN` block. Removed that
    grant and replaced it with `NOPASSWD: /usr/local/sbin/agentwatch-ebpf-capture.sh *`, scoped to the
-   fixed wrapper only. This is a genuine tightening of gembox's sudo policy, not merely a workaround —
+   fixed wrapper only. This is a genuine tightening of opuser's sudo policy, not merely a workaround —
    worth knowing if anything else on that box was relying on the old bare grant (nothing found to be,
    but not exhaustively checked).
 
 **End-to-end proof:** `agentwatch --ebpf --ebpf-command /usr/local/sbin/agentwatch-ebpf-capture.sh`
-run for real, with a `/bin/true` exec triggered mid-window as the `gembox` uid — captured via the real
+run for real, with a `/bin/true` exec triggered mid-window as the `opuser` uid — captured via the real
 probe (`evidence.source: "ebpf"` in the finding, not a mock), reconciled with no authorizing transcript,
 surfaced as `CONFIRMED`. First real proof this path works outside a unit-test mock. (2) is still open;
 unaffected by this.
@@ -343,13 +343,13 @@ self-report plane cannot describe *what* a tool did, egress records carry propor
 ## G-NH9 — RESOLVED (2026-08-23) — the `instructions_loaded` detector confirmed against a real hook firing, not just the fixture
 
 G26's own limits section left this open: the detector was unit-tested only, against a fixture shaped
-from a real gembox capture — no live Claude Code hook had actually fired through this code path
+from a real opuser capture — no live Claude Code hook had actually fired through this code path
 here. That confirmation happened, same day, in a warden-side session (`warden/DECISIONS.md` D37) —
 recorded here too since nothing in this repo pointed back to it, and an agentwatch-only session has
 no way to discover a warden-side entry on its own.
 
 **What was confirmed, against this repo's actual `feat/instructions-loaded-detector` code (now
-merged to `main` at `c94ea4b`), on a real Incus 7.3 `dev` instance on gembox:** clean baseline —
+merged to `main` at `c94ea4b`), on a real Incus 7.3 `dev` instance on opuser:** clean baseline —
 `warden report --live` showed zero events, no `instructions_loaded` finding. Real anomaly —
 `claudeMdExcludes` cleared, `/root/CLAUDE.md` planted, a real authenticated `claude -p` session
 actually loading it (the hook fired for real) — produced a real `Finding` via this detector, with

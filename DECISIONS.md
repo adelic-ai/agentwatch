@@ -1101,7 +1101,7 @@ That asymmetry is what a tripwire is, and it is why this one is layered on top o
 always-on `verify` ring rather than replacing it.
 
 **No windowing, and the reason is not just "dedup handles it."** Two independent reasons. First,
-the payload carries no timestamp (confirmed against the event warden captured for real on gembox:
+the payload carries no timestamp (confirmed against the event warden captured for real on opuser:
 `hook_event_name`, `file_path`, `memory_type`, `load_reason`, `session_id`, `transcript_path` — no
 time field), and warden's hook is a bare `cat >>`, so there is nothing to window *on* except the
 file's mtime, which is a property of the file rather than of any event in it. Second, and more
@@ -1135,7 +1135,7 @@ drops what it cannot parse is blind to precisely the novel case.
 
 **Validated at unit level only.** `tests/test_instructions_loaded.py` pins the parse, the identity
 scheme, the trust tier, and the `run_once` wiring against a fixture shaped after the real event
-warden captured on gembox. No live Claude Code client fired a hook into this code path here — that
+warden captured on opuser. No live Claude Code client fired a hook into this code path here — that
 confirmation belongs to warden's side of the arc and is called out as unvalidated in its D36.
 
 ## G27: G25's `scoped_out` companion, built — and it isn't the same shape UNEVALUABLE is

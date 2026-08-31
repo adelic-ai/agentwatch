@@ -228,5 +228,5 @@ divergence, don't silently paper over it):
   does. Noted so a future reader doesn't go looking for a dialect bug class that doesn't exist here.
 
 **Still out of scope, correctly**: build order steps 5-7 (the eBPF DaemonSet manifest, the real
-Warrant demo wiring, and the actual `kind`-cluster acceptance run per §8) need pop-os's `--vantage`
+Warrant demo wiring, and the actual `kind`-cluster acceptance run per §8) need devhost's `--vantage`
 environment and a live Warrant process - neither available for this hands-off pass.

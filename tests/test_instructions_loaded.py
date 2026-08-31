@@ -27,7 +27,7 @@ from agentwatch.run import Config, run_once
 
 AGENT_UID = 4000
 
-# Shaped after the event warden's D35 validation actually captured on gembox from a real Claude
+# Shaped after the event warden's D35 validation actually captured on opuser from a real Claude
 # Code client (a planted /root/CLAUDE.md loading with claudeMdExcludes temporarily cleared), not
 # after a payload anyone wished for. Note what it does NOT contain: a timestamp. That absence is
 # why this detector does not window - see DECISIONS.md D36 / warden's D36.
