@@ -156,16 +156,43 @@ def _load_ground_truth_events(
     return events
 
 
+def _discover_k8s_audit_log_paths(primary_path: Path) -> List[Path]:
+    """`primary_path` plus any rotated sibling logs the K8s API server's own rotation left behind
+    - the same class of gap warden's own D39 already found and fixed for auditd: a query against
+    only the live file can silently miss events that happened before a rotation, independent of
+    whether rotation has occurred. The API server's default rotator renames the pre-rotation file
+    to `<stem>-<RFC3339-ish timestamp><suffix>` alongside a fresh `<stem><suffix>` - confirmed
+    against a real rotated file on pop-os, 2026-08-31 (`audit-2026-08-31T07-41-42.854.log` beside
+    `audit.log`, which is a 100MB-triggered default rotation, not a bug in that file).
+
+    Sorted oldest-first by mtime for legibility (a reader scanning the merged stream sees events
+    roughly in order) - NOT load-bearing for reconciliation correctness, which compares each
+    event's own real timestamp, never input order. Deliberately unbounded: capping how many
+    rotated files get read to bound cost would silently reintroduce a smaller version of the exact
+    problem this exists to close, so a caller who needs that bound must choose it explicitly
+    (e.g. pass a `primary_path` in a directory pruned to a known retention window) rather than
+    this function guessing one."""
+    primary_path = Path(primary_path)
+    paths = [primary_path] if primary_path.exists() else []
+    pattern = f"{primary_path.stem}-*{primary_path.suffix}"
+    rotated = [p for p in primary_path.parent.glob(pattern) if p != primary_path and p.is_file()]
+    paths.extend(rotated)
+    return sorted(paths, key=lambda p: p.stat().st_mtime)
+
+
 def _load_k8s_events(k8s_audit_path: Optional[Path]) -> List[GroundTruthEvent]:
     """Deliberately NOT fused into `ground_truth_events`/`_load_ground_truth_events`'s stream:
     K8S_ACTION events carry no pid (K8S-DESIGN.md, events.py), so mixing them into the plane
     `orphan.py`'s ProcessTree/ancestry walk consumes is harmless (it already filters
     `ev.kind != EXEC`) but needless - keeping this plane separate keeps the blast radius of a bug
     here contained to `reconcile_k8s_scope`, never silently touching orphan/lan_reach detection."""
-    if not k8s_audit_path or not Path(k8s_audit_path).exists():
+    if not k8s_audit_path:
         return []
-    with Path(k8s_audit_path).open(encoding="utf-8", errors="replace") as fh:
-        events, _stats = k8s_audit.parse_lines(fh)
+    events: List[GroundTruthEvent] = []
+    for path in _discover_k8s_audit_log_paths(Path(k8s_audit_path)):
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            file_events, _stats = k8s_audit.parse_lines(fh)
+        events.extend(file_events)
     return events
 
 
