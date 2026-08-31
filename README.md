@@ -4,7 +4,9 @@
 autonomous runs alike; any situation where an LLM coding agent acts on a machine. agentwatch
 reconciles what an agent *said* it did — its transcript — against what it *actually* did — OS audit
 telemetry captured outside the agent — and surfaces the actions that have no authorizing intent
-behind them.
+behind them. An optional Kubernetes extension does the same reconciliation one level up: what an
+agent actually did on a cluster (K8s API audit log + eBPF) against what an authorization engine
+actually granted it — validated against a live cluster, **[see the demo](demo/k8s/README.md)**.
 
 It is **detective-only**: it never blocks, kills, or acts. It watches, and it is quiet by default —
 it reports exceptions, not activity.
@@ -63,55 +65,13 @@ bundled fixture data, with no trust claim attached (no `--plane-trust` was passe
 carries none). Point it at a real transcript and a real audit log next — see Quickstart below — once
 you're ready to attach one.
 
-## What it trusts — and how much
+## What it trusts, what it needs, where it has to run
 
-agentwatch is only as trustworthy as its ground-truth plane, and it says so on every finding via a
-**substrate trust tier** (`--plane-trust`):
-
-| Tier | Where the audit plane runs | Meaning |
-|---|---|---|
-| `unforgeable` | a VM kernel **outside** the agent's container (container-in-VM) | the agent cannot forge or erase it — findings are trustworthy |
-| `host_shared` | a host shared with the agent's container | weaker: a container escape reaches the plane |
-| `self_reported` | telemetry the agent itself emits (e.g. agent-authored OTEL) | **not** ground truth — do not stake detection on it |
-
-The tier is operator-declared, because a log parser cannot infer where its input came from. Omit it
-and findings carry **no** trust claim rather than a false one.
-
-## What it needs — and where it has to run
-
-agentwatch has no third-party runtime dependencies (see Install), but that is about the *tool*, not
-the *deployment*. To produce trustworthy findings it needs three things — and one of them is a
-**placement** requirement, not a package:
-
-1. **The agent's transcript** — its self-report plane (Claude Code / Gemini CLI adapters ship).
-2. **A ground-truth plane captured *above* the agent** — OS `execve`/`clone` records from **a kernel
-   the agent cannot reach**. This is the non-negotiable part: the capture, *and agentwatch itself*,
-   must run on a vantage **outside and above** the agent — never inside the agent's container, and
-   never from telemetry the agent emits about itself. A monitor the agent can edit is not a monitor.
-3. **The agent's identity on that plane** — the uid / cgroup of the agent's container, so
-   reconciliation scopes to the agent's own process subtree.
-
-Placement is what the trust tier above actually records — strongest to weakest:
-
-- **Agent in a container; capture + agentwatch on the VM kernel above it** (container-in-VM) →
-  `unforgeable`. Escape the container and the agent is *still inside the VM*, still below the vantage.
-  **This is the intended placement.**
-- **Agent in a container on a shared host; capture on the host kernel** → `host_shared`. Works, but a
-  container escape reaches the plane.
-- **Capture inside the agent's container, or the agent's own OTEL** → `self_reported`. **Not ground
-  truth** — do not stake detection on it. (This is the mistake most agent-monitoring setups make.)
-
-agentwatch stands up **none** of this itself — it is contract-bound (see below), so anything
-satisfying the environment half of [`CONTRACT.md`](CONTRACT.md) works, down to nothing more than a
-VM you already have and an audit log you point `--audit-log` at.
-
-**`warden` is a separate, optional companion project** (not yet published) that automates this
-placement — it puts the agent in a container inside a VM, runs the capture on the VM kernel, and
-hands agentwatch the container's identity, so you don't have to wire up the container-in-VM shape by
-hand. It is **not a dependency of agentwatch**: nothing here imports it, calls it, or requires it to
-be installed. It exists to make the *right* placement the *convenient* one — use it once it's out if
-that's helpful; until then, or if you'd rather not, point `--audit-log` / `--journal` at whatever
-your own substrate produces and declare the tier honestly with `--plane-trust`.
+agentwatch says how much to trust a finding on the finding itself, via a **substrate trust tier**
+(`--plane-trust`) — and that tier is a direct function of *where* the ground-truth capture and
+agentwatch itself run relative to the agent. Full trust-tier table, the three things agentwatch
+needs to produce a trustworthy finding, and the placement guidance that determines which tier you
+get: **[`docs/TRUST.md`](docs/TRUST.md)**.
 
 ## Verdicts
 
@@ -148,51 +108,10 @@ continuously. Batch/poll, not real-time streaming — by design.
 - `--audit-log` / `--journal` — the ground-truth plane (auditd text log; journald DROP-LAN records).
 - `--ebpf` — capture the ground-truth plane itself via bpftrace (`sudo -n`, `--ebpf-duration` seconds),
   with no external orchestrator required; fuses additively with `--audit-log`/`--journal` if given.
-- `--plane-trust` — declare the substrate tier (see above); omit for no claim.
+- `--plane-trust` — declare the substrate tier (see `docs/TRUST.md`); omit for no claim.
 
-## Deployment modes
-
-The placement above holds across workflows; what changes is the cadence — and, in one narrow case,
-the entire trust plane:
-
-- **Free-form dev (interactive, hands-off).** A persistent agent working in a container inside a VM;
-  agentwatch on the VM reconciles the live session over a window (`--watch`). Escape the container →
-  still in the VM, still watched. The everyday case.
-- **Hands-off workloads (task-bounded).** The same container-in-VM placement, reconciled once per run
-  against that run's transcript + capture. Batch, not live.
-- **Kernel-root workloads (narrow).** When a workload genuinely needs *real kernel root* (privileged
-  builds), it can't live in an unprivileged container — it gets a throwaway **sibling VM where the
-  agent is root**. An agent that owns the guest kernel can forge its own in-guest audit, so
-  **agentwatch's process reconciliation does not apply there** — that plane is no longer ground
-  truth. Oversight shifts to two things instead: (1) the **host-side egress plane** — the VM's
-  traffic, mediated and recorded outside the guest where the agent can't reach it; and (2) **rigorous
-  appsec on the outputs, after the fact** — you can't trust *how* the artifact was produced, so you
-  analyze *what* was produced. A canonized
-  **[ThreatForest](https://github.com/aws-samples/sample-agentic-attack-tree-generator)**-style pass
-  (attack-tree generation + verification over the artifacts) is the natural fit for that output
-  stage; see canon's guarantee tiers below. *(This output-verification path is a direction, not yet
-  wired.)*
-
-## Status — read this before relying on it
-
-**agentwatch is a work in progress, not yet a calibrated detector.** Being precise about what is and
-isn't proven is part of the point:
-
-- **False positives — strong on real data, but n=1.** On a benign real run, the scoped reconciler
-  produces **0 `CONFIRMED` orphans** (down from 83 in a naive first pass) through *structural*
-  attribution — session-subtree scoping and the graded verdicts — not threshold tuning. This is one
-  run, not a calibrated false-positive rate across diverse workloads.
-- **Recall is unmeasured.** Only *synthetic* planted-orphan cases prove the detector fires. It has
-  not been run against real adversarial telemetry (prompt injection, a compromised session), so
-  there is **no measured false-negative number**. An action the transcript plane can't authorize can
-  land in `NONE` — i.e. it could be missed, not caught.
-- **Attribution is heuristic, and that is a ceiling.** Linking a `tool_use` to a process is done by
-  process-subtree membership and a time window, not a deterministic correlation ID stamped at the
-  source. It is deliberately conservative (it won't assert a link it hasn't earned), which caps how
-  much it can safely catch. Raising the ceiling needs instrumented correlation IDs, not more tuning.
-
-In short: today it is a credible **verify-and-audit** surface on top of a real containment boundary —
-not something to stake detection on by itself.
+Deployment cadence (interactive vs. hands-off vs. the narrow kernel-root case) is covered in
+**[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)**.
 
 ## The contract — agentwatch is one implementation, not the interface
 
@@ -206,20 +125,16 @@ the conformance check. agentwatch is the reference implementation.
 
 ## Kubernetes extension
 
-An OPTIONAL third input plane, CONTRACT.md §1a: reconcile K8s ground truth (API-server audit log +
+An OPTIONAL third input plane (CONTRACT.md §1a): reconcile K8s ground truth (API-server audit log +
 eBPF process capture) against what an authorization engine actually granted, not just what the
-agent claims. Base conformance (Plane A + Plane B) is unaffected — this is additive, not a
-replacement.
+agent claims. Base conformance (transcript + OS ground truth alone) is unaffected — this is
+additive, not a replacement.
 
 - **Design + build order:** [`K8S-DESIGN.md`](K8S-DESIGN.md).
-- **Working demo, validated against a live cluster** (not a simulation — see its README for what
-  that run actually found and fixed along the way): [`demo/k8s/`](demo/k8s/README.md). Real `kind`
-  cluster, real in-cluster `warrant` instance, real eBPF DaemonSet — an authorized action produces
-  no finding, an unauthorized one is `CONFIRMED`, correctly, from two independent ground-truth
-  sources reconciled through one detector.
-- Reference authorization-plane adapter: `agentwatch/adapters/warrant.py`, reading
-  [`warrant`](https://github.com/adelic-ai/warrant)'s `/audit/log` — no changes needed on
-  `warrant`'s side to be conformant.
+- **Working demo, validated against a live cluster:** [`demo/k8s/README.md`](demo/k8s/README.md) —
+  real `kind` cluster, real in-cluster `warrant` instance, real eBPF DaemonSet; an authorized action
+  produces no finding, an unauthorized one is `CONFIRMED`, from two independent ground-truth sources
+  reconciled through one detector.
 
 ## Optional: canon guarantee tiers
 
@@ -259,6 +174,23 @@ demo/k8s/                K8s extension demo — kind cluster + in-cluster warran
                           validated against a live cluster; see K8S-DESIGN.md and its own README
 tests/                   unittest; a private real-telemetry acceptance set is skipped when absent
 ```
+
+## Documentation
+
+- **[`docs/TRUST.md`](docs/TRUST.md)** — the substrate trust-tier table, what agentwatch needs to
+  produce a trustworthy finding, and the placement guidance (container-in-VM vs. shared-host vs.
+  self-reported) that determines which tier a deployment earns.
+- **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — deployment modes: free-form dev, hands-off
+  workloads, the narrow kernel-root case where process reconciliation stops applying, and how the
+  Kubernetes extension is a genuinely different mode rather than a variant of these.
+- **[`docs/STATUS.md`](docs/STATUS.md)** — read this before relying on the tool: what's calibrated,
+  what isn't, and why the Kubernetes extension's status is evidenced differently (live-validated,
+  not synthetic-only).
+- **[`CONTRACT.md`](CONTRACT.md)** — the normative oversight contract: the two required planes, the
+  optional third (`AuthorizationAdapter`), the verdict vocabulary, trust tiers, conformance rules.
+- **[`K8S-DESIGN.md`](K8S-DESIGN.md)** — the Kubernetes extension's design and build order.
+- **[`demo/k8s/README.md`](demo/k8s/README.md)** — the Kubernetes extension's working demo, run for
+  real against a live cluster.
 
 ## License
 
