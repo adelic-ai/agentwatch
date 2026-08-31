@@ -97,6 +97,13 @@ FILE_WRITE = "file_write"
 # an EXEC event is consumed. See groundtruth/audit_log.py and reconciler/process_tree.py.
 CLONE = "clone"
 
+# K8s API-server audit event: an agent's action against the K8s API (verb+resource), not a process
+# execve. Deliberately its own kind rather than reused EXEC - EXEC's fields (pid/ppid/exe/comm) are
+# process-tree shaped and don't fit a control-plane API call, and orphan.py's ancestry walk must
+# never accidentally treat a K8s action as a candidate for process-tree scoping. See
+# groundtruth/k8s_audit.py and reconciler/k8s_scope.py (K8S-DESIGN.md).
+K8S_ACTION = "k8s_action"
+
 # Security-relevant event kinds v1 can produce. `connect`/`file_write` are defined now (per design
 # doc §3.1 "later connect, file-watches") but no parser emits them yet in v1 - audit.log.sample has
 # no NETFILTER/PATH-write records to validate against, so wiring them in now would be untested

@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from agentwatch.reconciler.verdict import Verdict
+
 DETECTOR_ORPHAN_SYSCALL = "orphan_syscall"
 DETECTOR_DIVERGENCE = "divergence"
 DETECTOR_LAN_REACH = "lan_reach"
@@ -26,6 +28,14 @@ DETECTOR_PARSE_HEALTH = "parse_health"  # v2, design doc v2 §4 - see reconciler
 # separate from orphan_syscall on purpose - conflating "I looked and this is unexplained" with "I
 # could not look" is exactly what DECISIONS.md G24 exists to stop.
 DETECTOR_UNEVALUABLE = "unevaluable_exec"
+# K8S-DESIGN.md's technique name is `AGENT.k8s-scope-violation`; this is the detector-name slug
+# that string maps to in this codebase's actual (snake_case, no "AGENT." prefix) naming - matching
+# every other DETECTOR_* constant here rather than the design doc's illustrative dotted form.
+DETECTOR_K8S_SCOPE_VIOLATION = "k8s_scope_violation"
+# Same separation as DETECTOR_UNEVALUABLE vs DETECTOR_ORPHAN_SYSCALL (DECISIONS.md G24): a K8s
+# action whose identity correlation failed must never share a detector key with CONFIRMED/GAP
+# behaviour findings, or a coverage defect gets silently counted as a clean run.
+DETECTOR_K8S_UNEVALUABLE = "k8s_unevaluable_action"
 
 # Detectors whose findings derive from the GROUND-TRUTH plane, so they inherit that plane's
 # substrate trust tier (CONTRACT.md §4 / contract.py PlaneTrust). Transcript-plane findings
@@ -43,6 +53,8 @@ GROUND_TRUTH_DETECTORS = frozenset({
     DETECTOR_ORPHAN_SYSCALL,
     DETECTOR_LAN_REACH,
     DETECTOR_UNEVALUABLE,
+    DETECTOR_K8S_SCOPE_VIOLATION,
+    DETECTOR_K8S_UNEVALUABLE,
 })
 
 
@@ -244,6 +256,74 @@ def unevaluable_finding(candidates, ts: float) -> Finding:
     }
     return Finding(
         id=fid, detector=DETECTOR_UNEVALUABLE, ts=ts, summary=summary, evidence=evidence
+    )
+
+
+def k8s_scope_finding(candidate) -> Finding:
+    """Only call for a CONFIRMED or GAP verdict candidate (K8S-DESIGN.md §0) - mirrors
+    `orphan_finding`'s contract. UNEVALUABLE candidates are aggregated separately, same reasoning
+    as `unevaluable_finding` (a coverage defect, not agent behaviour, must not compete with or be
+    counted alongside behaviour findings)."""
+    ev = candidate.event
+    grant = candidate.grant
+    if candidate.verdict == Verdict.GAP:
+        fid = _make_id(
+            DETECTOR_K8S_SCOPE_VIOLATION, "gap", grant.subject_id, grant.resource_id, grant.action, grant.ts
+        )
+        summary = f"K8s scope GAP: {grant.subject_id} was granted {grant.action} on {grant.resource_id}, never observed"
+        evidence = {
+            "verdict": "GAP",
+            "subject_id": grant.subject_id,
+            "action": grant.action,
+            "resource_id": grant.resource_id,
+            "grant_ts": grant.ts,
+            "grant_raw": grant.raw_ref,
+            "reason": candidate.reason,
+        }
+        return Finding(
+            id=fid, detector=DETECTOR_K8S_SCOPE_VIOLATION, ts=grant.ts, summary=summary, evidence=evidence
+        )
+    verb, resource_id = ev.args if len(ev.args) == 2 else (None, None)
+    fid = _make_id(DETECTOR_K8S_SCOPE_VIOLATION, "confirmed", candidate.subject_id, verb, resource_id, ev.ts)
+    summary = f"K8s scope violation: {candidate.subject_id} performed {verb} on {resource_id} with no authorizing grant"
+    evidence = {
+        "verdict": "CONFIRMED",
+        "subject_id": candidate.subject_id,
+        "action": verb,
+        "resource_id": resource_id,
+        "success": ev.success,
+        "matched_forbid_grant": grant.raw_ref if grant is not None else None,
+        "raw_event": ev.raw,
+        "reason": candidate.reason,
+    }
+    return Finding(
+        id=fid, detector=DETECTOR_K8S_SCOPE_VIOLATION, ts=ev.ts, summary=summary, evidence=evidence
+    )
+
+
+def k8s_unevaluable_finding(candidates, ts: float) -> Finding:
+    """ONE aggregate finding for a run's UNEVALUABLE k8s-scope candidates, never one each - same
+    reasoning as `unevaluable_finding`: a coverage defect is a property of the run's identity-
+    correlation plane, not of any single action."""
+    subjects = sorted({c.subject_id for c in candidates if c.subject_id})
+    fid = _make_id(DETECTOR_K8S_UNEVALUABLE, ts, tuple(subjects))
+    summary = (
+        f"{len(candidates)} K8s action(s) could not be evaluated - identity correlation failed. "
+        "Neither authorized nor a violation: not examined."
+    )
+    evidence = {
+        "count": len(candidates),
+        "subjects": subjects,
+        "actions": [
+            {
+                "reason": c.reason,
+                "raw_event": c.event.raw if c.event is not None else None,
+            }
+            for c in candidates
+        ],
+    }
+    return Finding(
+        id=fid, detector=DETECTOR_K8S_UNEVALUABLE, ts=ts, summary=summary, evidence=evidence
     )
 
 

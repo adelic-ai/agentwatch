@@ -10,9 +10,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Mapping, Optional
 
 from agentwatch import canon_emit, runtimes
+from agentwatch.adapters.authorization import GrantEvent
 from agentwatch.contract import PlaneTrust
 from agentwatch.detectors.agent_flag import read_entries
 from agentwatch.detectors.instructions_loaded import read_events as read_instructions_loaded
@@ -30,6 +31,8 @@ from agentwatch.findings import (
     agent_flag_finding,
     divergence_finding,
     instructions_loaded_finding,
+    k8s_scope_finding,
+    k8s_unevaluable_finding,
     lan_reach_finding,
     orphan_finding,
     parse_health_finding,
@@ -37,8 +40,10 @@ from agentwatch.findings import (
     stamp_plane_trust,
     unevaluable_finding,
 )
-from agentwatch.groundtruth import audit_log, journald
+from agentwatch.groundtruth import audit_log, journald, k8s_audit
 from agentwatch.reconciler.divergence import reconcile_divergence
+from agentwatch.reconciler.k8s_identity import IdentityCorrelator
+from agentwatch.reconciler.k8s_scope import reconcile_k8s_scope
 from agentwatch.reconciler.orphan import DEFAULT_WINDOW_SECONDS, reconcile_orphans_scoped
 from agentwatch.reconciler.parse_health import assess_parse_health
 from agentwatch.reconciler.verdict import Verdict
@@ -85,6 +90,18 @@ class Config:
     # same run_once the file planes use, so the eBPF loader=reader path gets no second reconciler and
     # no lowered honesty bar. None = file planes only (unchanged behavior).
     ground_truth_events: Optional[List[GroundTruthEvent]] = None
+    # K8S-DESIGN.md §0/§1/§2: the third-plane detector's two inputs, additive like everything
+    # above - None means "not collected, contributes nothing" (this detector does not run at all),
+    # same as instructions_loaded_path. k8s_audit_path is a local, tailable audit log file (the
+    # `kind`/self-managed-control-plane case - see groundtruth/k8s_audit.py's scope note).
+    # warrant_grants is pre-fetched (an AuthorizationAdapter's iter_grants() output), same "caller
+    # decides how to fetch it, this Config just consumes the result" shape as ground_truth_events.
+    k8s_audit_path: Optional[Path] = None
+    warrant_grants: Optional[List[GrantEvent]] = None
+    # cgroup_id -> Warrant subject_id, for eBPF-sourced ground-truth events (reconciler/
+    # k8s_identity.py's IdentityCorrelator). Empty by default - a caller reconciling only K8s-audit
+    # events (identity already carried in the event itself) needs no mapping supplied.
+    k8s_cgroup_to_subject: Optional[Mapping[str, str]] = None
 
 
 def _merge_parse_stats(all_stats: List[ParseStats]) -> ParseStats:
@@ -129,6 +146,19 @@ def _load_ground_truth_events(
         with Path(journal_path).open(encoding="utf-8", errors="replace") as fh:
             journal_events, _stats = journald.parse_lines(fh)
         events.extend(journal_events)
+    return events
+
+
+def _load_k8s_events(k8s_audit_path: Optional[Path]) -> List[GroundTruthEvent]:
+    """Deliberately NOT fused into `ground_truth_events`/`_load_ground_truth_events`'s stream:
+    K8S_ACTION events carry no pid (K8S-DESIGN.md, events.py), so mixing them into the plane
+    `orphan.py`'s ProcessTree/ancestry walk consumes is harmless (it already filters
+    `ev.kind != EXEC`) but needless - keeping this plane separate keeps the blast radius of a bug
+    here contained to `reconcile_k8s_scope`, never silently touching orphan/lan_reach detection."""
+    if not k8s_audit_path or not Path(k8s_audit_path).exists():
+        return []
+    with Path(k8s_audit_path).open(encoding="utf-8", errors="replace") as fh:
+        events, _stats = k8s_audit.parse_lines(fh)
     return events
 
 
@@ -206,6 +236,21 @@ def run_once(config: Config, now: Optional[float] = None) -> List[Finding]:
 
     for ev in detect_lan_reach(ground_truth_events):
         findings.append(lan_reach_finding(ev))
+
+    # K8S-DESIGN.md §0/§2/§3: the third-plane detector. Contributes nothing when either input is
+    # absent - same "None = not collected" contract as every other optional plane in this Config,
+    # not a special case.
+    if config.k8s_audit_path and config.warrant_grants:
+        k8s_events = _load_k8s_events(config.k8s_audit_path)
+        correlator = IdentityCorrelator(cgroup_to_subject=config.k8s_cgroup_to_subject or {})
+        k8s_unevaluable: List = []
+        for candidate in reconcile_k8s_scope(k8s_events, config.warrant_grants, correlator):
+            if candidate.verdict in (Verdict.CONFIRMED, Verdict.GAP):
+                findings.append(k8s_scope_finding(candidate))
+            elif candidate.verdict == Verdict.UNEVALUABLE:
+                k8s_unevaluable.append(candidate)
+        if k8s_unevaluable:
+            findings.append(k8s_unevaluable_finding(k8s_unevaluable, ts=now))
 
     state = load_state(config.state_path)
     self_mod_baseline = state.get("self_mod_baseline", {})
