@@ -18,7 +18,8 @@ agentwatch has no third-party runtime dependencies (see the main README's Instal
 that is about the *tool*, not the *deployment*. To produce trustworthy findings it needs three
 things — and one of them is a **placement** requirement, not a package:
 
-1. **The agent's transcript** — its self-report plane (Claude Code / Gemini CLI adapters ship).
+1. **The agent's transcript** — its self-report plane (Claude Code / Gemini CLI adapters ship, not
+   equally current — see [`STATUS.md`](STATUS.md)).
 2. **A ground-truth plane captured *above* the agent** — OS `execve`/`clone` records from **a kernel
    the agent cannot reach**. This is the non-negotiable part: the capture, *and agentwatch itself*,
    must run on a vantage **outside and above** the agent — never inside the agent's container, and

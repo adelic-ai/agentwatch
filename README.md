@@ -1,12 +1,15 @@
 # agentwatch
 
 **Oversight for coding-agent sessions of any kind** — interactive freeform dev and hands-off
-autonomous runs alike; any situation where an LLM coding agent acts on a machine. agentwatch
-reconciles what an agent *said* it did — its transcript — against what it *actually* did — OS audit
-telemetry captured outside the agent — and surfaces the actions that have no authorizing intent
-behind them. An optional Kubernetes extension does the same reconciliation one level up: what an
-agent actually did on a cluster (K8s API audit log + eBPF) against what an authorization engine
-actually granted it — validated against a live cluster, **[see the demo](demo/k8s/README.md)**.
+autonomous runs alike; any situation where an LLM coding agent acts on a machine. (That's the shape
+of problem this addresses, not a claim of built-in support for every agent: **Claude Code and
+Gemini CLI adapters ship today** — see Status for their relative currency — **and the architecture
+extends to others via one `TranscriptAdapter`.**) agentwatch reconciles what an agent *said* it
+did — its transcript — against what it *actually* did — OS audit telemetry captured outside the
+agent — and surfaces the actions that have no authorizing intent behind them. An optional
+Kubernetes extension does the same reconciliation one level up: what an agent actually did on a
+cluster (K8s API audit log + eBPF) against what an authorization engine actually granted it —
+validated against a live cluster, **[see the demo](demo/k8s/README.md)**.
 
 It is **detective-only**: it never blocks, kills, or acts. It watches, and it is quiet by default —
 it reports exceptions, not activity.
@@ -104,7 +107,7 @@ continuously. Batch/poll, not real-time streaming — by design.
 
 - `--agent-uid` scopes reconciliation to the agent user's process tree (required).
 - `--transcript` / `--transcript-glob` — the self-report plane. Claude Code and Gemini CLI adapters
-  ship; add a runtime by writing one `TranscriptAdapter`.
+  ship (not equally current — see `docs/STATUS.md`); add a runtime by writing one `TranscriptAdapter`.
 - `--audit-log` / `--journal` — the ground-truth plane (auditd text log; journald DROP-LAN records).
 - `--ebpf` — capture the ground-truth plane itself via bpftrace (`sudo -n`, `--ebpf-duration` seconds),
   with no external orchestrator required; fuses additively with `--audit-log`/`--journal` if given.
