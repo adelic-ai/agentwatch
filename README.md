@@ -1,12 +1,17 @@
 # agentwatch
 
-**Oversight for coding-agent sessions of any kind** — interactive freeform dev and hands-off
-autonomous runs alike; any situation where an LLM coding agent acts on a machine. agentwatch
+**Oversight for LLM coding-agent sessions** — interactive dev and hands-off autonomous runs alike
+(Claude Code and Gemini CLI adapters today; others plug in via one `TranscriptAdapter`). agentwatch
 reconciles what an agent *said* it did — its transcript — against what it *actually* did — OS audit
 telemetry captured outside the agent — and surfaces the actions that have no authorizing intent
-behind them. An optional Kubernetes extension does the same reconciliation one level up: what an
-agent actually did on a cluster (K8s API audit log + eBPF) against what an authorization engine
-actually granted it — validated against a live cluster, **[see the demo](demo/k8s/README.md)**.
+behind them.
+
+An optional Kubernetes extension does the same reconciliation one level up: what an agent actually
+did on a cluster (K8s API audit log + eBPF) against what an authorization engine actually granted
+it. Validated against a live cluster, it flags an action that Kubernetes RBAC **permits** but that
+exceeds the agent's granted scope — a violation RBAC alone cannot see. The live run also exposed a
+wire-format bug in agentwatch's own authorization adapter that all 37 unit tests had missed (since
+fixed). **[See the demo](demo/k8s/README.md).**
 
 It is **detective-only**: it never blocks, kills, or acts. It watches, and it is quiet by default —
 it reports exceptions, not activity.
@@ -59,8 +64,17 @@ cat /tmp/findings.jsonl
   - orphan_syscall   orphan exec: pid=800 exe=/usr/bin/nc comm=nc - no ancestor tool_use in window
 ```
 
+The finding written to `findings.jsonl` (abridged):
+
+```json
+{"detector": "orphan_syscall",
+ "evidence": {"args": ["nc", "-e", "/bin/sh"], "pid": 800, "uid": 3000, "source": "audit",
+              "reason": "no ancestor tool_use, and not explainable as runtime activity",
+              "verdict": "CONFIRMED"}}
+```
+
 `echo legit` was authorized by the session's one `Bash` tool_use and produced nothing; `nc -e /bin/sh`
-has no ancestor `tool_use` in its window and comes back `CONFIRMED`. That's the whole mechanism, on
+has no ancestor `tool_use` in its window and is recorded with verdict `CONFIRMED`. That's the whole mechanism, on
 bundled fixture data, with no trust claim attached (no `--plane-trust` was passed, so the finding
 carries none). Point it at a real transcript and a real audit log next — see Quickstart below — once
 you're ready to attach one.
