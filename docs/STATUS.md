@@ -19,6 +19,18 @@ calibrated detector.** Being precise about what is and isn't proven is part of t
 In short: today it is a credible **verify-and-audit** surface on top of a real containment boundary —
 not something to stake detection on by itself.
 
+## Adapter currency — Claude Code vs. Gemini CLI
+
+Both `TranscriptAdapter`s exist and both are structurally sound, but they are not equally current.
+**Claude Code is the actively used and tested runtime.** The Gemini CLI adapter hasn't been worked
+on or exercised in a while — it isn't known-broken, it's just unverified against whatever Gemini
+CLI does today. Don't read "Claude Code and Gemini CLI adapters ship" elsewhere in this repo as a
+claim that both are equally current; they aren't. (Separately, `gemini_cli.py`'s `KNOWN_VERSIONS`
+being the generic string `"v1"` rather than a specific CLI version — unlike Claude's exact
+`"2.1.220"` pin — is not evidence of this staleness; that's a deliberate, documented consequence of
+Gemini CLI's own telemetry exposing no CLI version at all, only an OTel schema version. See
+`DECISIONS.md` G21. The two are unrelated facts, worth not conflating.)
+
 ## The Kubernetes extension's status is different, and better-evidenced
 
 Unlike the process-reconciliation core above, the K8s extension (`AuthorizationAdapter`, K8s audit +
